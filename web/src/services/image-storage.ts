@@ -3,6 +3,7 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { readImageMeta } from "@/lib/image-utils";
+import { relayOpenAiRequest } from "./api/relay";
 
 export type UploadedImage = {
     url: string;
@@ -18,8 +19,19 @@ const imageLogStore = localforage.createInstance({ name: "infinite-canvas", stor
 const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
 const objectUrls = new Map<string, string>();
 
+/** 远程图片 URL 优先走 canvas-agent 中继下载，避免浏览器直连第三方被 CORS 拦截；失败时回退浏览器直连。 */
+async function fetchRemoteBlob(url: string): Promise<Blob> {
+    try {
+        return (await relayOpenAiRequest({ baseUrl: "", apiKey: "", method: "GET", path: url, kind: "blob" })) as Blob;
+    } catch {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(i18n.t("common.imageReadFailed"));
+        return await response.blob();
+    }
+}
+
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? await fetchRemoteBlob(input) : input;
     const storageKey = `image:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
@@ -53,9 +65,8 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url || url.startsWith("data:")) return url;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(i18n.t("common.imageReadFailed"));
-    return blobToDataUrl(await response.blob());
+    // 远程 URL 走中继下载（避免第三方图片域无 CORS 头导致浏览器拦截）
+    return blobToDataUrl(await fetchRemoteBlob(url));
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {
