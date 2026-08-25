@@ -1,13 +1,26 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
 
+import { relayOpenAiRequest } from "./api/relay";
+
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
 const objectUrls = new Map<string, string>();
 
+/** 远程媒体 URL 优先走 canvas-agent 中继下载，避免第三方域名无 CORS 头被浏览器拦截；失败回退浏览器直连。 */
+async function fetchRemoteMediaBlob(url: string): Promise<Blob> {
+    try {
+        return (await relayOpenAiRequest({ baseUrl: "", apiKey: "", method: "GET", path: url, kind: "blob" })) as Blob;
+    } catch {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("media fetch failed");
+        return await response.blob();
+    }
+}
+
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? await fetchRemoteMediaBlob(input) : input;
     const storageKey = `${prefix}:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
