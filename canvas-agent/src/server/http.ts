@@ -378,6 +378,9 @@ export function startHttpServer() {
         })();
         const upstreamMethod = String(method).toUpperCase();
         const authHeaders: Record<string, string> = apiKey ? { authorization: `Bearer ${String(apiKey)}` } : {};
+        const customHeaders = (req.body && typeof req.body === "object" && (req.body as Record<string, unknown>).headers && typeof (req.body as Record<string, unknown>).headers === "object")
+            ? (req.body as Record<string, unknown>).headers as Record<string, string>
+            : {};
         let upstream; // 由 fetch 赋值推断为全局 Response（不能用 Express 的 Response 类型）
         try {
             if (kind === "form") {
@@ -391,13 +394,15 @@ export function startHttpServer() {
                     if (!match) continue;
                     form.append(file.name, new Blob([Buffer.from(match[2], "base64")], { type: match[1] }), file.filename || "file.png");
                 }
-                upstream = await fetch(target, { method: upstreamMethod, headers: authHeaders, body: form });
+                upstream = await fetch(target, { method: upstreamMethod, headers: { ...authHeaders, ...customHeaders }, body: form });
             } else if (kind === "blob") {
-                upstream = await fetch(target, { method: upstreamMethod, headers: authHeaders });
+                upstream = await fetch(target, { method: upstreamMethod, headers: { ...authHeaders, ...customHeaders } });
             } else {
+                const mergedHeaders: Record<string, string> = { ...authHeaders, ...customHeaders };
+                if (!mergedHeaders["content-type"]) mergedHeaders["content-type"] = "application/json";
                 upstream = await fetch(target, {
                     method: upstreamMethod,
-                    headers: { ...authHeaders, "content-type": "application/json" },
+                    headers: mergedHeaders,
                     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
                 });
             }

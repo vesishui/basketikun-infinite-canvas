@@ -8,10 +8,12 @@ export type RelayKind = "json" | "form" | "blob";
 export type RelayOpenAiOptions = {
     baseUrl: string;
     apiKey: string;
-    method?: "GET" | "POST";
+    method?: string;
     path: string;
     body?: unknown;
     kind?: RelayKind;
+    /** 额外请求头透传给上游（如 x-goog-api-key 等） */
+    headers?: Record<string, string>;
     signal?: AbortSignal;
 };
 
@@ -33,6 +35,7 @@ export async function relayOpenAiRequest(options: RelayOpenAiOptions): Promise<u
                 path: options.path,
                 body: options.kind === "blob" ? undefined : options.body,
                 kind: options.kind || "json",
+                headers: options.headers || {},
             },
             { signal: options.signal },
         );
@@ -47,9 +50,9 @@ export async function relayOpenAiRequest(options: RelayOpenAiOptions): Promise<u
         return response.data;
     }
     // 直连回退（无 agent 时，可能被 CORS 拦截）
-    const target = buildApiUrl(options.baseUrl, options.path);
-    const headers: Record<string, string> = options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {};
-    if (options.kind !== "form") headers["content-type"] = "application/json";
+    const target = /^https?:\/\//i.test(options.path) ? options.path : buildApiUrl(options.baseUrl, options.path);
+    const headers: Record<string, string> = { ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}), ...(options.headers || {}) };
+    if (options.kind !== "form" && !headers["content-type"]) headers["content-type"] = "application/json";
     const response = await axios.request({
         method: options.method || "POST",
         url: target,

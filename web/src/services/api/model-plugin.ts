@@ -2,6 +2,7 @@ import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
 import { buildApiUrl, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { relayOpenAiRequest } from "./relay";
 
 type RequestOptions = { signal?: AbortSignal };
 
@@ -31,43 +32,91 @@ export type RunPluginArgs = {
     onDelta?: (text: string) => void;
 };
 
-function pluginHeaders(extra?: Record<string, string>, hasJsonBody = false): Record<string, string> {
-    const headers: Record<string, string> = {};
-    if (hasJsonBody) headers["Content-Type"] = "application/json";
-    return { ...headers, ...extra };
-}
-
 function pluginUrl(config: AiConfig, path: string) {
     if (/^https?:/i.test(path)) return path;
     return buildApiUrl(config.baseUrl, path.startsWith("/") ? path : `/${path}`);
 }
 
+function pluginBlobToDataUrl(blob: Blob) {
+    return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("read blob failed"));
+        reader.readAsDataURL(blob);
+    });
+}
+
+/** 把浏览器 FormData 转成 relay 需要的 {fields, files:[{name,filename,dataUrl}]}。 */
+async function pluginFormDataToRelayBody(form: FormData) {
+    const fields: Record<string, string> = {};
+    const files: Array<{ name: string; filename?: string; dataUrl: string }> = [];
+    for (const [key, value] of form.entries()) {
+        if (value instanceof Blob) {
+            files.push({ name: key, filename: value instanceof File && value.name ? value.name : "file.png", dataUrl: await pluginBlobToDataUrl(value) });
+        } else {
+            fields[key] = String(value);
+        }
+    }
+    return { fields, files };
+}
+
+/**
+ * 插件脚本的请求统一走 canvas-agent 中继，避免浏览器直连第三方被 CORS 拦截。
+ * 支持 JSON / FormData / blob 下载；未连 agent 时由 relayOpenAiRequest 回退浏览器直连。
+ */
+async function pluginRelayRequest(
+    config: AiConfig,
+    options: { method: string; path: string; data?: unknown; params?: Record<string, unknown>; headers?: Record<string, string>; responseType?: "json" | "blob" | "text" | "arraybuffer"; signal?: AbortSignal },
+) {
+    let target = pluginUrl(config, options.path);
+    if (options.params && Object.keys(options.params).length) {
+        const url = new URL(target);
+        Object.entries(options.params).forEach(([key, value]) => { if (value !== undefined && value !== null) url.searchParams.set(key, String(value)); });
+        target = url.toString();
+    }
+    let kind: "json" | "form" | "blob" = "json";
+    let body: unknown = options.data;
+    if (typeof FormData !== "undefined" && body instanceof FormData) {
+        kind = "form";
+        body = await pluginFormDataToRelayBody(body);
+    }
+    if (options.responseType === "blob") {
+        kind = "blob";
+        body = undefined;
+    }
+    return relayOpenAiRequest({
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        method: options.method,
+        path: target,
+        body,
+        kind,
+        headers: options.headers,
+        signal: options.signal,
+    });
+}
+
 function createPluginHttp(config: AiConfig, options?: RequestOptions): PluginHttp {
-    const run = async (method: "get" | "post", path: string, body: unknown, opts?: PluginHttpOptions) => {
-        const isForm = typeof FormData !== "undefined" && body instanceof FormData;
-        const response = await axios.request({
-            method,
-            url: pluginUrl(config, path),
-            data: method === "post" ? body : undefined,
-            params: opts?.params,
-            headers: pluginHeaders({ Authorization: `Bearer ${config.apiKey}`, ...opts?.headers }, method === "post" && !isForm && body !== undefined),
-            responseType: opts?.responseType || "json",
-            signal: options?.signal,
-        });
-        return response.data;
-    };
     return {
         url: (path) => pluginUrl(config, path),
-        post: (path, body, opts) => run("post", path, body, opts),
-        get: (path, opts) => run("get", path, undefined, opts),
+        post: (path, body, opts) => pluginRelayRequest(config, { method: "post", path, data: body, headers: opts?.headers, params: opts?.params, responseType: opts?.responseType, signal: options?.signal }),
+        get: (path, opts) => pluginRelayRequest(config, { method: "get", path, headers: opts?.headers, params: opts?.params, responseType: opts?.responseType, signal: options?.signal }),
     };
 }
 
 /** Raw request with no automatic auth header — the script controls method, url, headers, body entirely. */
 function createPluginRequest(config: AiConfig, options?: RequestOptions) {
     return async (requestConfig: AxiosRequestConfig & { url: string }) => {
-        const response = await axios.request({ ...requestConfig, url: pluginUrl(config, requestConfig.url), signal: options?.signal });
-        return response.data;
+        const method = String(requestConfig.method || "get");
+        return pluginRelayRequest(config, {
+            method,
+            path: requestConfig.url,
+            data: requestConfig.data,
+            params: requestConfig.params as Record<string, unknown> | undefined,
+            headers: requestConfig.headers as Record<string, string> | undefined,
+            responseType: requestConfig.responseType as "json" | "blob" | "text" | "arraybuffer" | undefined,
+            signal: options?.signal,
+        });
     };
 }
 
