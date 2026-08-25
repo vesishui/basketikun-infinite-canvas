@@ -127,6 +127,8 @@ function conversationBootstrapView(conversation: AgentConversationState) {
 // 画布渠道会话持久化：作为"历史"页的一条可恢复记录
 const CANVAS_SESSION_ID = "canvas-direct-session";
 const CANVAS_SESSION_STORAGE_KEY = "canvas-agent-direct-session";
+// Agent 运行日志持久化（刷新页面后保留）
+const AGENT_EVENT_LOGS_STORAGE_KEY = "canvas-agent-event-logs";
 // 画布渠道可用的画布操作工具（与 canvas-agent 白名单一致），让第三方模型也能创建/修改/选中画布节点
 const DIRECT_CHAT_CANVAS_TOOLS = [
     "canvas_get_state",
@@ -298,6 +300,21 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             }
         } catch { /* ignore */ }
     }, []);
+    // Agent 运行日志持久化：刷新页面后恢复历史日志
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem(AGENT_EVENT_LOGS_STORAGE_KEY);
+            if (!raw) return;
+            const saved = JSON.parse(raw);
+            if (Array.isArray(saved) && saved.length && !useAgentStore.getState().eventLogs.length) {
+                saved.forEach((item) => pushEventLog(item));
+            }
+        } catch { /* ignore */ }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    useEffect(() => {
+        try { localStorage.setItem(AGENT_EVENT_LOGS_STORAGE_KEY, JSON.stringify(eventLogs)); } catch { /* ignore */ }
+    }, [eventLogs]);
     const canvasConfig = useConfigStore((state) => state.config);
     const canvasChannelModel = useMemo(() => {
         const channels = canvasConfig.channels || [];
@@ -668,6 +685,9 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         source.addEventListener("agent_log", (event) => {
             if (!isCurrentConnection()) return;
             const text = parseEventData<{ text?: unknown }>(event)?.text;
+            const log = String(text ?? "");
+            // 内置 Codex 未配置可用 provider 时，尝试连 OpenAI websocket 会被代理 502，纯噪音，过滤掉
+            if (/codex_api|responses_websocket|wss:\/\/api\.openai\.com|failed to connect to websocket/i.test(log)) return;
             addEventLog(rt("log"), text, text);
         });
         source.addEventListener("skills_changed", (event) => {
