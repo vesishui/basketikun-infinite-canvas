@@ -4,10 +4,10 @@ import i18n from "@/i18n";
 import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
-import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
+import { relayOpenAiRequest } from "./relay";
 
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
@@ -751,9 +751,12 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
     try {
-        const response = await axios.post<ImageApiResponse>(
-            aiApiUrl(requestConfig, "/images/generations"),
-            {
+        // 走 canvas-agent 中继，避免浏览器直连第三方被 CORS 拦截
+        const data = (await relayOpenAiRequest({
+            baseUrl: requestConfig.baseUrl,
+            apiKey: requestConfig.apiKey,
+            path: "/images/generations",
+            body: {
                 model: requestConfig.model,
                 prompt: withSystemPrompt(requestConfig, prompt),
                 n,
@@ -764,12 +767,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 ...(/gpt-image/.test(requestConfig.model) ? {} : { response_format: "b64_json" }),
                 output_format: IMAGE_OUTPUT_FORMAT,
             },
-            {
-                headers: aiHeaders(requestConfig, "application/json"),
-                signal: options?.signal,
-            },
-        );
-        const images = await parseImagePayload(response.data);
+            signal: options?.signal,
+        })) as ImageApiResponse;
+        const images = await parseImagePayload(data);
         return images;
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -813,31 +813,39 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
-    const formData = new FormData();
-    formData.set("model", requestConfig.model);
-    formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
-    formData.set("n", String(n));
+    const fields: Record<string, string> = {
+        model: requestConfig.model,
+        prompt: withSystemPrompt(requestConfig, requestPrompt),
+        n: String(n),
+        output_format: IMAGE_OUTPUT_FORMAT,
+    };
     // gpt-image models reject response_format; they always return b64.
     if (!/gpt-image/.test(requestConfig.model)) {
-        formData.set("response_format", "b64_json");
+        fields.response_format = "b64_json";
     }
-    formData.set("output_format", IMAGE_OUTPUT_FORMAT);
     if (quality) {
-        formData.set("quality", quality);
+        fields.quality = quality;
     }
     if (requestSize) {
-        formData.set("size", requestSize);
+        fields.size = requestSize;
     }
     if (background) {
-        formData.set("background", background);
+        fields.background = background;
     }
-    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    files.forEach((file) => formData.append("image", file));
-    if (mask) formData.set("mask", dataUrlToFile(mask));
+    const files = await Promise.all(references.map(async (image) => ({ name: "image", filename: "ref.png", dataUrl: await imageToDataUrl(image) })));
+    if (mask) files.push({ name: "mask", filename: "mask.png", dataUrl: await imageToDataUrl(mask) });
 
     try {
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal });
-        const images = await parseImagePayload(response.data);
+        // 走 canvas-agent 中继（multipart 由后端重建），避免浏览器直连第三方被 CORS 拦截
+        const data = (await relayOpenAiRequest({
+            baseUrl: requestConfig.baseUrl,
+            apiKey: requestConfig.apiKey,
+            path: "/images/edits",
+            kind: "form",
+            body: { fields, files },
+            signal: options?.signal,
+        })) as ImageApiResponse;
+        const images = await parseImagePayload(data);
         return images;
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));

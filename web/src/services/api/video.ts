@@ -2,11 +2,11 @@ import axios from "axios";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
-import { dataUrlToFile } from "@/lib/image-utils";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
-import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+import { boolConfig, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
+import { relayOpenAiRequest } from "./relay";
 import type { ReferenceImage } from "@/types/image";
 
 type VideoResponse = { id: string; status?: string; error?: { message?: string }; url?: string; result_url?: string; video_url?: string; content?: { video_url?: string; url?: string } | null };
@@ -21,10 +21,6 @@ export type VideoGenerationTaskState = { status: "pending" } | { status: "comple
 
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
-
-function aiApiUrl(config: AiConfig, path: string) {
-    return buildApiUrl(config.baseUrl, path);
-}
 
 function aiHeaders(config: AiConfig, contentType?: string) {
     return {
@@ -117,17 +113,25 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    const body = new FormData();
-    body.append("model", modelOptionName(model));
-    body.append("prompt", prompt);
-    body.append("seconds", normalizeVideoSeconds(config.videoSeconds));
-    if (normalizeVideoSize(config.size)) body.append("size", normalizeVideoSize(config.size)!);
-    body.append("resolution_name", normalizeVideoResolution(config.vquality));
-    body.append("preset", "normal");
-    const files = await Promise.all(references.slice(0, 7).map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    files.forEach((file) => body.append("input_reference[]", file));
+    const files = await Promise.all(references.slice(0, 7).map(async (image) => ({ name: "input_reference[]", filename: "ref.png", dataUrl: await imageToDataUrl(image) })));
+    const fields: Record<string, string> = {
+        model: modelOptionName(model),
+        prompt,
+        seconds: normalizeVideoSeconds(config.videoSeconds),
+        preset: "normal",
+    };
+    if (normalizeVideoSize(config.size)) fields.size = normalizeVideoSize(config.size)!;
+    fields.resolution_name = normalizeVideoResolution(config.vquality);
     try {
-        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config), signal: options?.signal })).data);
+        // 走 canvas-agent 中继，避免浏览器直连第三方被 CORS 拦截
+        const created = unwrapVideoResponse((await relayOpenAiRequest({
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            path: "/videos",
+            kind: "form",
+            body: { fields, files },
+            signal: options?.signal,
+        })) as ApiVideoResponse);
         if (!created.id) throw new Error(apiText("noVideoTaskId"));
         return { id: created.id, provider: "openai", model };
     } catch (error) {
@@ -137,13 +141,26 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
 
 async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     try {
-        const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
+        const video = unwrapVideoResponse((await relayOpenAiRequest({
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            method: "GET",
+            path: `/videos/${task.id}`,
+            signal: options?.signal,
+        })) as ApiVideoResponse);
         const url = videoResultUrl(video);
         if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
         if (video.status === "completed") {
-            const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
-            await assertVideoBlob(content.data);
-            return { status: "completed", result: { blob: content.data } };
+            const content = (await relayOpenAiRequest({
+                baseUrl: config.baseUrl,
+                apiKey: config.apiKey,
+                method: "GET",
+                path: `/videos/${task.id}/content`,
+                kind: "blob",
+                signal: options?.signal,
+            })) as Blob;
+            await assertVideoBlob(content);
+            return { status: "completed", result: { blob: content } };
         }
         if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
         return { status: "pending" };
@@ -154,9 +171,16 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, 
 
 async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
     try {
-        const response = await axios.get<Blob>(url, { responseType: "blob", signal: options?.signal });
-        await assertVideoBlob(response.data);
-        return { blob: response.data };
+        const blob = (await relayOpenAiRequest({
+            baseUrl: "",
+            apiKey: "",
+            method: "GET",
+            path: url,
+            kind: "blob",
+            signal: options?.signal,
+        })) as Blob;
+        await assertVideoBlob(blob);
+        return { blob };
     } catch (error) {
         if (axios.isCancel(error) || options?.signal?.aborted) throw error;
         return { url, mimeType: "video/mp4" };

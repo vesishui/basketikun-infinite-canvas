@@ -360,6 +360,65 @@ export function startHttpServer() {
         }
         res.json({ ok: true, content: finalContent, toolCalls: executedTools });
     }));
+    // 画布渠道图片/视频/音频等 OpenAI 兼容接口的中继：浏览器直连第三方会被 CORS 拦截，
+    // 前端把请求发给本端点，后端转发到第三方（图片生成/编辑、视频创建/查询/下载都走这里）。
+    app.post("/agent/direct/relay", route(async (req, res) => {
+        const { baseUrl, apiKey, method = "POST", path, body, kind = "json" } = req.body || {};
+        if (!path || typeof path !== "string") {
+            res.status(400).json({ ok: false, error: "缺少 path" });
+            return;
+        }
+        const rawPath = String(path);
+        const fullUrl = /^https?:\/\//i.test(rawPath);
+        const target = fullUrl ? rawPath : (() => {
+            const normalizedBase = String(baseUrl || "").trim().replace(/\/+$/, "");
+            if (!normalizedBase) return rawPath;
+            const apiBase = normalizedBase.toLowerCase().endsWith("/v1") ? normalizedBase : `${normalizedBase}/v1`;
+            return `${apiBase}${rawPath.startsWith("/") ? rawPath : `/${rawPath}`}`;
+        })();
+        const upstreamMethod = String(method).toUpperCase();
+        const authHeaders: Record<string, string> = apiKey ? { authorization: `Bearer ${String(apiKey)}` } : {};
+        let upstream; // 由 fetch 赋值推断为全局 Response（不能用 Express 的 Response 类型）
+        try {
+            if (kind === "form") {
+                const payload = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+                const form = new FormData();
+                const fields = (payload.fields || {}) as Record<string, unknown>;
+                for (const [key, value] of Object.entries(fields)) form.set(key, String(value));
+                const files = (Array.isArray(payload.files) ? payload.files : []) as Array<{ name: string; filename?: string; dataUrl?: string }>;
+                for (const file of files) {
+                    const match = String(file.dataUrl || "").match(/^data:([^;]+);base64,(.*)$/s);
+                    if (!match) continue;
+                    form.append(file.name, new Blob([Buffer.from(match[2], "base64")], { type: match[1] }), file.filename || "file.png");
+                }
+                upstream = await fetch(target, { method: upstreamMethod, headers: authHeaders, body: form });
+            } else if (kind === "blob") {
+                upstream = await fetch(target, { method: upstreamMethod, headers: authHeaders });
+            } else {
+                upstream = await fetch(target, {
+                    method: upstreamMethod,
+                    headers: { ...authHeaders, "content-type": "application/json" },
+                    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+                });
+            }
+        } catch (error) {
+            res.status(502).json({ ok: false, error: `上游连接失败: ${error instanceof Error ? error.message : String(error)}` });
+            return;
+        }
+        if (!upstream.ok) {
+            const text = await upstream.text().catch(() => "");
+            res.status(upstream.status).type("application/json").send(JSON.stringify({ ok: false, error: `上游返回 ${upstream.status}: ${text.slice(0, 300)}` }));
+            return;
+        }
+        if (kind === "blob") {
+            const arrayBuffer = await upstream.arrayBuffer();
+            const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+            res.json({ ok: true, data: Buffer.from(arrayBuffer).toString("base64"), contentType });
+            return;
+        }
+        const text = await upstream.text().catch(() => "");
+        res.type(upstream.headers.get("content-type") || "application/json").send(text);
+    }));
     app.get("/agent/codex/workspace", (_req, res) => {
         const workspace = ensureSiteWorkspace(config);
         res.json({ ok: true, workspace, conversation: session.conversationStateSnapshot });
