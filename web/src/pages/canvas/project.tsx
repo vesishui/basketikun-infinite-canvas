@@ -1759,37 +1759,58 @@ function InfiniteCanvasPage() {
     const splitImageNode = useCallback(
         async (node: CanvasNodeData, params: CanvasImageSplitParams) => {
             if (!node.metadata?.content) return;
-            setSplitNodeId(null);
-            const pieces = await splitDataUrl(node.metadata.content, params);
-            const gap = 16;
-            const cellWidth = node.width / params.columns;
-            const cellHeight = node.height / params.rows;
-            const startX = node.position.x + node.width + 96;
-            const startY = node.position.y;
-            const childNodes = await Promise.all(
-                pieces.map(async (piece) => {
-                    const image = await uploadImage(piece.dataUrl);
-                    const id = nanoid();
-                    return {
-                        id,
-                        type: CanvasNodeType.Image,
-                        title: t("canvas.projectPage.splitTitle", { name: node.title || t("assets.kinds.image"), row: piece.row + 1, column: piece.column + 1 }),
-                        position: { x: startX + piece.column * (cellWidth + gap), y: startY + piece.row * (cellHeight + gap) },
-                        width: cellWidth,
-                        height: cellHeight,
-                        metadata: {
-                            ...imageMetadata(image),
-                            prompt: node.metadata?.prompt,
-                        },
-                    } satisfies CanvasNodeData;
-                }),
-            );
-            setNodes((prev) => [...prev, ...childNodes]);
-            setConnections((prev) => [...prev, ...childNodes.map((child) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: child.id }))]);
-            setSelectedNodeIds(new Set(childNodes.map((child) => child.id)));
-            setSelectedConnectionId(null);
-            setDialogNodeId(null);
-            message.success(t("canvas.projectPage.splitSuccess", { count: childNodes.length }));
+            try {
+                // 先做可能失败的操作（切图、上传），全部成功后才入画布
+                const pieces = await splitDataUrl(node.metadata.content, params);
+                const gap = 16;
+                const cellWidth = node.width / params.columns;
+                const cellHeight = node.height / params.rows;
+                const startX = node.position.x + node.width + 96;
+                const startY = node.position.y;
+                // 单块上传失败只跳过该块，不让整批子节点丢失
+                const results = await Promise.all(
+                    pieces.map(async (piece) => {
+                        try {
+                            const image = await uploadImage(piece.dataUrl);
+                            const id = nanoid();
+                            return {
+                                node: {
+                                    id,
+                                    type: CanvasNodeType.Image,
+                                    title: t("canvas.projectPage.splitTitle", { name: node.title || t("assets.kinds.image"), row: piece.row + 1, column: piece.column + 1 }),
+                                    position: { x: startX + piece.column * (cellWidth + gap), y: startY + piece.row * (cellHeight + gap) },
+                                    width: cellWidth,
+                                    height: cellHeight,
+                                    metadata: {
+                                        ...imageMetadata(image),
+                                        prompt: node.metadata?.prompt,
+                                    },
+                                } satisfies CanvasNodeData,
+                            };
+                        } catch {
+                            return null;
+                        }
+                    }),
+                );
+                const childNodes = results.flatMap((r) => (r ? [r.node] : []));
+                if (!childNodes.length) {
+                    throw new Error(t("canvas.projectPage.splitAllFailed"));
+                }
+                const failedCount = results.length - childNodes.length;
+                setNodes((prev) => [...prev, ...childNodes]);
+                setConnections((prev) => [...prev, ...childNodes.map((child) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: child.id }))]);
+                setSelectedNodeIds(new Set(childNodes.map((child) => child.id)));
+                setSelectedConnectionId(null);
+                setDialogNodeId(null);
+                if (failedCount) {
+                    message.warning(t("canvas.projectPage.splitPartialFailed", { count: childNodes.length, failed: failedCount }));
+                } else {
+                    message.success(t("canvas.projectPage.splitSuccess", { count: childNodes.length }));
+                }
+            } finally {
+                // 无论成功还是失败，都关闭对话框（否则切图/上传抛错时对话框会卡住不关）
+                setSplitNodeId(null);
+            }
         },
         [message, t],
     );
@@ -2352,7 +2373,18 @@ function InfiniteCanvasPage() {
                     const controller = startGenerationRequest(videoId, nodeId, nodeId, runController);
                     try {
                         const video = await storeGeneratedVideo(
-                            await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, { signal: controller.signal }),
+                            await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, {
+                                signal: controller.signal,
+                                onProgress: (text) => {
+                                    setNodes((prev) =>
+                                        prev.map((n) =>
+                                            n.id === videoId
+                                                ? { ...n, metadata: { ...n.metadata, errorDetails: text } }
+                                                : n,
+                                        ),
+                                    );
+                                },
+                            }),
                         );
                         const videoSize = fitNodeSize(video.width || spec.width, video.height || spec.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
                         setNodes((prev) =>
@@ -3153,7 +3185,22 @@ function InfiniteCanvasPage() {
                     <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
                 ) : null}
 
-                {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
+                {splitNode?.metadata?.content ? (
+                    <CanvasNodeSplitDialog
+                        dataUrl={splitNode.metadata.content}
+                        open={Boolean(splitNode)}
+                        onClose={() => setSplitNodeId(null)}
+                        onConfirm={(params) => {
+                            void (async () => {
+                                try {
+                                    await splitImageNode(splitNode!, params);
+                                } catch (error) {
+                                    message.error(t("canvas.projectPage.splitFailed", { message: error instanceof Error ? error.message : String(error) }));
+                                }
+                            })();
+                        }}
+                    />
+                ) : null}
 
                 {upscaleNode?.metadata?.content ? (
                     <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open={Boolean(upscaleNode)} onClose={() => setUpscaleNodeId(null)} onConfirm={(params) => void upscaleImageNode(upscaleNode!, params)} />

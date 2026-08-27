@@ -12,7 +12,7 @@ import type { ReferenceImage } from "@/types/image";
 type VideoResponse = { id: string; status?: string; error?: { message?: string }; url?: string; result_url?: string; video_url?: string; content?: { video_url?: string; url?: string } | null };
 type ApiVideoResponse = VideoResponse | { code?: number | string; data?: VideoResponse | null; msg?: string; message?: string; error?: { message?: string } };
 type ApiEnvelope<T> = T | { code?: number | string; data?: T | null; msg?: string; message?: string; error?: { message?: string } };
-type RequestOptions = { signal?: AbortSignal };
+type RequestOptions = { signal?: AbortSignal; onProgress?: (text: string) => void };
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
@@ -81,6 +81,7 @@ async function createPluginVideoTask(config: AiConfig, model: string, script: st
                 watermark: boolConfig(config.videoWatermark, false),
             },
             signal: options?.signal,
+            onDelta: options?.onProgress,
         }),
     );
     const id = nanoid();

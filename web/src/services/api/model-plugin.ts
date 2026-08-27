@@ -2,6 +2,7 @@ import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
 import { buildApiUrl, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { uploadImageToPublicUrl } from "./image-host";
 import { relayOpenAiRequest } from "./relay";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -158,6 +159,7 @@ function createPoll(signal?: AbortSignal) {
  *   prompt / images / messages / params        — request input
  *   model / baseUrl / apiKey / systemPrompt / reasoningEffort     — current channel and text settings
  *   http / request / poll / sleep / signal / onDelta    — request helpers
+ *   uploadImage(dataUrlOrUrl)                  — base64 图传免费图床换公网 URL（http(s) 原样透传）
  * The script must `return` the result; each caller normalizes it to its capability's shape.
  */
 export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<T> {
@@ -181,6 +183,7 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
         "sleep",
         "signal",
         "onDelta",
+        "uploadImage",
         `"use strict"; return (async () => {\n${args.script}\n})();`,
     ) as (...fnArgs: unknown[]) => Promise<T>;
     try {
@@ -200,6 +203,7 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
             (ms: number) => sleep(ms, args.signal),
             args.signal,
             args.onDelta,
+            (dataUrlOrUrl: string) => uploadImageToPublicUrl(dataUrlOrUrl, args.signal),
         );
     } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") throw error;
@@ -229,6 +233,7 @@ export function getPluginVariables(): PluginVariable[] {
         { name: "sleep", type: "function", desc: i18n.t("modelPlugin.variables.sleep") },
         { name: "signal", type: "AbortSignal", desc: i18n.t("modelPlugin.variables.signal") },
         { name: "onDelta", type: "function", desc: i18n.t("modelPlugin.variables.onDelta"), capabilities: ["text"] },
+        { name: "uploadImage", type: "function", desc: i18n.t("modelPlugin.variables.uploadImage"), capabilities: ["image", "video"] },
     ];
 }
 

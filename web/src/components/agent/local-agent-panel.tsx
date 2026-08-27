@@ -219,6 +219,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const autoConnectRef = useRef(false);
     const connectedRef = useRef(false);
     const errorLoggedRef = useRef(false);
+    const reconnectAttemptRef = useRef(0);
+    const reconnectTimerRef = useRef<number | null>(null);
     const attachmentUrlsRef = useRef(new Set<string>());
     const clientIdRef = useRef("");
     const [clientReady, setClientReady] = useState(false);
@@ -540,6 +542,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 : current.messages.filter((item) => !isConnectionErrorMessage(item));
             errorLoggedRef.current = false;
             connectedRef.current = true;
+            reconnectAttemptRef.current = 0;
+            if (reconnectTimerRef.current) {
+                window.clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
+            }
             setAgentState({
                 connected: true,
                 activity: pendingApprovals.length ? rt("awaitingApproval") : busy ? rt("codexRunning") : rt("connected"),
@@ -729,13 +736,29 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             });
             useAgentSkillStore.getState().reset();
             if (!wasConnected) {
+                // 首次连接失败：不直接放弃，延时自动重连（指数退避，上限 30s），
+                // 避免 canvas-agent 重启/刷新瞬间的偶发连接失败需要手动重连。
                 source.close();
-                setAgentState({ enabled: false });
+                reconnectAttemptRef.current += 1;
+                const delay = Math.min(30000, 1000 * 2 ** Math.min(reconnectAttemptRef.current, 5));
+                if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = window.setTimeout(() => {
+                    if (disposed || !enabled || !token.trim()) return;
+                    // 通过 enabled 置位重跑本 effect，重建 EventSource
+                    setAgentState({ enabled: false, silentConnect: true });
+                    window.setTimeout(() => {
+                        if (!disposed && enabled && token.trim()) setAgentState({ enabled: true, silentConnect: true });
+                    }, 50);
+                }, delay);
             }
         };
         return () => {
             disposed = true;
             source.close();
+            if (reconnectTimerRef.current) {
+                window.clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
+            }
             connectedRef.current = false;
             loadThreadsSequenceRef.current += 1;
             useAgentSkillStore.getState().reset();

@@ -690,15 +690,20 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
-    const response = await axios.post<GeminiPayload>(
-        geminiApiUrl(config, "generateContent"),
-        {
+    // 走 canvas-agent 中继，避免浏览器直连 Gemini API 被 CORS 拦截（图生图必经此路径）
+    const data = (await relayOpenAiRequest({
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        path: geminiApiUrl(config, "generateContent"),
+        kind: "json",
+        body: {
             ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
             contents: [{ role: "user", parts }],
         },
-        { headers: geminiHeaders(config), signal: options?.signal },
-    );
-    return parseGeminiImagePayload(response.data);
+        headers: geminiHeaders(config),
+        signal: options?.signal,
+    })) as GeminiPayload;
+    return parseGeminiImagePayload(data);
 }
 
 function parseGeminiImagePayload(payload: GeminiPayload) {
@@ -892,20 +897,32 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
 
 export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
     try {
+        // 模型列表统一走 canvas-agent relay 中转（服务端请求，无浏览器 CORS 限制），
+        // 避免第三方渠道（如 lingchuangai.top / fhl.mom 等）未开 CORS 头导致浏览器直连被拦截。
+        // path 传完整 URL（relay 遇到 http(s) 开头会直接使用，不额外拼 /v1），规避 relay 的 /v1 拼接逻辑。
         if (config.apiFormat === "gemini") {
-            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
-            validateGeminiPayload(response.data);
-            return (response.data.models || [])
+            const payload = (await relayOpenAiRequest({
+                baseUrl: "",
+                apiKey: config.apiKey,
+                method: "GET",
+                path: `${geminiBaseUrl({ baseUrl: config.baseUrl })}/models`,
+                kind: "json",
+                headers: { "x-goog-api-key": config.apiKey },
+            })) as GeminiPayload;
+            validateGeminiPayload(payload);
+            return (payload.models || [])
                 .map((model) => model.name?.replace(/^models\//, ""))
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
-            headers: {
-                Authorization: `Bearer ${config.apiKey}`,
-            },
-        });
-        return (response.data.data || [])
+        const payload = (await relayOpenAiRequest({
+            baseUrl: "",
+            apiKey: config.apiKey,
+            method: "GET",
+            path: `${config.baseUrl.replace(/\/+$/, "")}/v1/models`,
+            kind: "json",
+        })) as { data?: Array<{ id?: string }>; error?: { message?: string } };
+        return (payload.data || [])
             .map((model) => model.id)
             .filter((id): id is string => Boolean(id))
             .sort((a, b) => a.localeCompare(b));

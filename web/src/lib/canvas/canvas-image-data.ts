@@ -1,3 +1,5 @@
+import i18n from "@/i18n";
+
 export type ImageCropRect = {
     x: number;
     y: number;
@@ -166,9 +168,10 @@ function drawResizeCanvas(source: CanvasImageSource, sourceWidth: number, source
 }
 
 function loadImage(dataUrl: string) {
-    return new Promise<HTMLImageElement>((resolve) => {
+    return new Promise<HTMLImageElement>((resolve, reject) => {
         const image = new Image();
         image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error(i18n.t("common.imageReadFailed")));
         image.src = dataUrl;
     });
 }

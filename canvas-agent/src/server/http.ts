@@ -377,10 +377,20 @@ export function startHttpServer() {
             return `${apiBase}${rawPath.startsWith("/") ? rawPath : `/${rawPath}`}`;
         })();
         const upstreamMethod = String(method).toUpperCase();
-        const authHeaders: Record<string, string> = apiKey ? { authorization: `Bearer ${String(apiKey)}` } : {};
+        // 合并大小写不敏感：自定义 headers 里的 Authorization 会与 authHeaders 的小写 authorization
+        // 形成两个不同 key，fetch 会把两个 Authorization 头都发给上游，导致 401 Invalid token。
         const customHeaders = (req.body && typeof req.body === "object" && (req.body as Record<string, unknown>).headers && typeof (req.body as Record<string, unknown>).headers === "object")
             ? (req.body as Record<string, unknown>).headers as Record<string, string>
             : {};
+        const mergedAuthHeaders: Record<string, string> = {};
+        if (apiKey) mergedAuthHeaders["authorization"] = `Bearer ${String(apiKey)}`;
+        for (const [key, value] of Object.entries(customHeaders)) {
+            // 覆盖同义 header（忽略大小写），保留脚本自定义 header 的原始写法
+            const duplicateKey = Object.keys(mergedAuthHeaders).find((existing) => existing.toLowerCase() === key.toLowerCase());
+            if (duplicateKey) delete mergedAuthHeaders[duplicateKey];
+            mergedAuthHeaders[key] = value;
+        }
+        const authHeaders = mergedAuthHeaders;
         let upstream; // 由 fetch 赋值推断为全局 Response（不能用 Express 的 Response 类型）
         try {
             if (kind === "form") {
@@ -398,8 +408,8 @@ export function startHttpServer() {
             } else if (kind === "blob") {
                 upstream = await fetch(target, { method: upstreamMethod, headers: { ...authHeaders, ...customHeaders } });
             } else {
-                const mergedHeaders: Record<string, string> = { ...authHeaders, ...customHeaders };
-                if (!mergedHeaders["content-type"]) mergedHeaders["content-type"] = "application/json";
+                const mergedHeaders: Record<string, string> = { ...authHeaders };
+                if (!Object.keys(mergedHeaders).some((key) => key.toLowerCase() === "content-type")) mergedHeaders["content-type"] = "application/json";
                 upstream = await fetch(target, {
                     method: upstreamMethod,
                     headers: mergedHeaders,
@@ -707,9 +717,20 @@ export function startHttpServer() {
     });
 }
 
-/** 将异步 Express 路由异常交给统一错误处理中间件。 */
+/** 将异步 Express 路由异常统一处理：主动返回带 CORS 头的 500 JSON，
+ *  避免 Express 默认错误处理不带 Access-Control-Allow-Origin 头导致浏览器报跨域。 */
 function route(handler: (req: Request, res: Response) => Promise<unknown>) {
-    return (req: Request, res: Response, next: NextFunction) => void handler(req, res).catch(next);
+    return (req: Request, res: Response, next: NextFunction) =>
+        void handler(req, res).catch((err: unknown) => {
+            if (res.headersSent) return void next(err);
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[route] 未处理异常: ${message}`);
+            try {
+                res.status(500).json({ ok: false, error: message });
+            } catch {
+                next(err);
+            }
+        });
 }
 
 /** 从 Express 路由参数中读取单个字符串。 */

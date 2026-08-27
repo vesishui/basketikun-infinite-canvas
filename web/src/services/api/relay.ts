@@ -26,6 +26,7 @@ export async function relayOpenAiRequest(options: RelayOpenAiOptions): Promise<u
     const { url, token } = useAgentStore.getState();
     const endpoint = url?.trim().replace(/\/+$/, "");
     if (endpoint && token) {
+        // validateStatus 恒为 true：relay 非 2xx 时也先拿响应体，把真实错误详情抛给调用方（否则 axios 只报 "Network Error"）
         const response = await axios.post(
             `${endpoint}/agent/direct/relay?token=${encodeURIComponent(token)}`,
             {
@@ -37,17 +38,20 @@ export async function relayOpenAiRequest(options: RelayOpenAiOptions): Promise<u
                 kind: options.kind || "json",
                 headers: options.headers || {},
             },
-            { signal: options.signal },
+            { signal: options.signal, validateStatus: () => true },
         );
+        const data = response.data as { ok?: boolean; data?: string; contentType?: string; error?: string };
+        if (data && data.ok === false) {
+            throw new Error(data.error || `中继请求失败 (HTTP ${response.status})`);
+        }
         if (options.kind === "blob") {
-            const payload = response.data as { ok?: boolean; data?: string; contentType?: string; error?: string };
-            if (!payload?.ok || !payload.data) throw new Error(payload?.error || "中继失败");
-            const binary = atob(payload.data);
+            if (!data?.ok || !data.data) throw new Error(data?.error || "中继失败");
+            const binary = atob(data.data);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            return new Blob([bytes], { type: payload.contentType || "application/octet-stream" });
+            return new Blob([bytes], { type: data.contentType || "application/octet-stream" });
         }
-        return response.data;
+        return data;
     }
     // 直连回退（无 agent 时，可能被 CORS 拦截）
     const target = /^https?:\/\//i.test(options.path) ? options.path : buildApiUrl(options.baseUrl, options.path);

@@ -21,6 +21,12 @@ const objectUrls = new Map<string, string>();
 
 /** 远程图片 URL 优先走 canvas-agent 中继下载，避免浏览器直连第三方被 CORS 拦截；失败时回退浏览器直连。 */
 async function fetchRemoteBlob(url: string): Promise<Blob> {
+    // data URL 或 blob URL → 直接 fetch 转 Blob（不走 relay，agent 无法处理 data: 和 blob: 协议）
+    if (url.startsWith("data:") || url.startsWith("blob:")) {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(i18n.t("common.imageReadFailed"));
+        return response.blob();
+    }
     try {
         return (await relayOpenAiRequest({ baseUrl: "", apiKey: "", method: "GET", path: url, kind: "blob" })) as Blob;
     } catch {
@@ -31,7 +37,17 @@ async function fetchRemoteBlob(url: string): Promise<Blob> {
 }
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    const blob = typeof input === "string" ? await fetchRemoteBlob(input) : input;
+    let blob: Blob;
+    if (input instanceof Blob) {
+        blob = input;
+    } else if (input.startsWith("data:")) {
+        // data URL（如 canvas.toDataURL 产物）→ 浏览器直接 fetch 转 Blob，
+        // 不走 relay（agent 无法处理 data: 协议，会挂起导致切分图片等功能卡死）
+        blob = await fetch(input).then((res) => res.blob());
+    } else {
+        // HTTP/HTTPS URL → 走 relay 中继下载（避免浏览器 CORS 拦截）
+        blob = await fetchRemoteBlob(input);
+    }
     const storageKey = `image:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
