@@ -175,6 +175,12 @@ function InfiniteCanvasPage() {
         startX: number;
         startY: number;
         initialSelectedNodes: { id: string; x: number; y: number }[];
+        // Option+拖动复制: 记录"克隆节点"的 id 映射, 拖拽时移动克隆体, 释放时重建连线
+        cloneInfo?: {
+            idMap: Map<string, string>; // 原id → 克隆id
+            clonedIds: string[]; // 克隆节点 id
+            originalSelectedIds: string[]; // 原选中节点 id
+        };
     }>({
         isDraggingNode: false,
         hasMoved: false,
@@ -1114,12 +1120,49 @@ function InfiniteCanvasPage() {
                 });
             }
         });
+        // Option(Alt)+拖动复制: 克隆选中的简单节点(非群组), 拖拽时移动克隆体, 释放时重建内部连线
+        const isCloneDrag = Boolean(event.altKey) && ![...dragIds].some((id) => currentNodes.find((node) => node.id === id)?.type === CanvasNodeType.Group);
+        const initialSelected = currentNodes.filter((node) => dragIds.has(node.id)).map((node) => ({ id: node.id, x: node.position.x, y: node.position.y }));
+        let cloneInfo: typeof dragRef.current.cloneInfo;
+        if (isCloneDrag) {
+            const originalIds = [...dragIds];
+            const idMap = new Map<string, string>();
+            const clonedNodes = originalIds.map((id, index) => {
+                const source = currentNodes.find((node) => node.id === id);
+                if (!source) return null;
+                const newId = `${source.type}-clone-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
+                idMap.set(id, newId);
+                return {
+                    ...source,
+                    id: newId,
+                    title: `${source.title} Copy`,
+                    position: { x: source.position.x + 32, y: source.position.y + 32 },
+                    metadata: source.metadata ? { ...source.metadata } : undefined,
+                } as CanvasNodeData;
+            }).filter((node): node is CanvasNodeData => Boolean(node));
+            // 克隆连线: 与选中节点相连的连线都复制。两端都选中→两端映射到克隆体; 仅一端选中→选中端映射, 另一端保留原节点
+            const clonedConnections = connectionsRef.current
+                .filter((conn) => originalIds.includes(conn.fromNodeId) || originalIds.includes(conn.toNodeId))
+                .map((conn) => ({ ...conn, id: nanoid(), fromNodeId: idMap.get(conn.fromNodeId) || conn.fromNodeId, toNodeId: idMap.get(conn.toNodeId) || conn.toNodeId }));
+            // 同步写入 ref 与 state，确保拖拽与连线立即可用
+            nodesRef.current = [...nodesRef.current, ...clonedNodes];
+            connectionsRef.current = [...connectionsRef.current, ...clonedConnections];
+            setNodes((prev) => [...prev, ...clonedNodes]);
+            setConnections((prev) => [...prev, ...clonedConnections]);
+            const clonedIds = clonedNodes.map((node) => node.id);
+            setSelectedNodeIds(new Set(clonedIds));
+            setSelectedConnectionId(null);
+            cloneInfo = { idMap, clonedIds, originalSelectedIds: originalIds };
+        }
         dragRef.current = {
             isDraggingNode: true,
             hasMoved: false,
             startX: event.clientX,
             startY: event.clientY,
-            initialSelectedNodes: currentNodes.filter((node) => dragIds.has(node.id)).map((node) => ({ id: node.id, x: node.position.x, y: node.position.y })),
+            initialSelectedNodes: isCloneDrag && cloneInfo
+                ? cloneInfo.clonedIds.map((id) => { const n = nodesRef.current.find((node) => node.id === id); return n ? { id, x: n.position.x, y: n.position.y } : { id, x: 0, y: 0 }; })
+                : initialSelected,
+            ...(cloneInfo ? { cloneInfo } : {}),
         };
         historyPausedRef.current = true;
         nodeDraggingRef.current = true;
@@ -1165,6 +1208,7 @@ function InfiniteCanvasPage() {
         dragRef.current.isDraggingNode = false;
         dragRef.current.hasMoved = false;
         dragRef.current.initialSelectedNodes = [];
+        dragRef.current.cloneInfo = undefined;
         if (wasClick && clickedNodeId) {
             const clickedNode = nodesRef.current.find((node) => node.id === clickedNodeId);
             const clickedDefinition = clickedNode ? getNodeDefinition(clickedNode.type) : undefined;

@@ -256,7 +256,7 @@ export function startHttpServer() {
     // 后端调用 OpenAI 兼容的 /chat/completions，绕过 Codex（第三方渠道经常换配置，画布改了这里自动跟着用）。
     // 支持 tools：第三方模型可多轮调用画布工具（创建/修改/选中节点等），工具经 session.callTool 转发到已连接画布执行。
     app.post("/agent/direct/chat", route(async (req, res) => {
-        const { baseUrl, apiKey, model, messages, tools } = req.body || {};
+        const { baseUrl, apiKey, model, messages, tools, reasoningEffort } = req.body || {};
         if (!baseUrl || !apiKey || !model || !Array.isArray(messages)) {
             res.status(400).json({ ok: false, error: "缺少 baseUrl/apiKey/model/messages" });
             return;
@@ -293,10 +293,12 @@ export function startHttpServer() {
                 if (signal.aborted) { res.status(499).json({ ok: false, error: "用户取消了请求" }); return; }
                 let upstream;
                 try {
+                    // reasoning_effort 透传：deepseek 等推理模型支持该参数（如 low/medium/high），不支持的渠道会忽略
+                    const effort = typeof reasoningEffort === "string" && reasoningEffort ? { reasoning_effort: reasoningEffort } : {};
                     upstream = await fetch(target, {
                         method: "POST",
                         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-                        body: JSON.stringify({ model, messages: workingMessages, ...(toolDefs.length ? { tools: toolDefs, tool_choice: "auto" } : {}), stream: false }),
+                        body: JSON.stringify({ model, messages: workingMessages, ...(toolDefs.length ? { tools: toolDefs, tool_choice: "auto" } : {}), ...effort, stream: false }),
                         signal,
                     });
                 } catch (error) {
@@ -437,7 +439,9 @@ export function startHttpServer() {
                 });
             }
         } catch (error) {
-            res.status(502).json({ ok: false, error: `上游连接失败: ${error instanceof Error ? error.message : String(error)}` });
+            // fetch failed 等网络错误的具体原因在 error.cause 里（如 ECONNRESET/ENOTFOUND/413 重置），这里带上便于诊断
+            const cause = error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : "";
+            res.status(502).json({ ok: false, error: `上游连接失败: ${error instanceof Error ? error.message : String(error)}${cause}` });
             return;
         }
         if (!upstream.ok) {

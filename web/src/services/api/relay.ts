@@ -27,31 +27,41 @@ export async function relayOpenAiRequest(options: RelayOpenAiOptions): Promise<u
     const endpoint = url?.trim().replace(/\/+$/, "");
     if (endpoint && token) {
         // validateStatus 恒为 true：relay 非 2xx 时也先拿响应体，把真实错误详情抛给调用方（否则 axios 只报 "Network Error"）
-        const response = await axios.post(
-            `${endpoint}/agent/direct/relay?token=${encodeURIComponent(token)}`,
-            {
-                baseUrl: options.baseUrl,
-                apiKey: options.apiKey,
-                method: options.method || "POST",
-                path: options.path,
-                body: options.kind === "blob" ? undefined : options.body,
-                kind: options.kind || "json",
-                headers: options.headers || {},
-            },
-            { signal: options.signal, validateStatus: () => true },
-        );
-        const data = response.data as { ok?: boolean; data?: string; contentType?: string; error?: string };
-        if (data && data.ok === false) {
-            throw new Error(data.error || `中继请求失败 (HTTP ${response.status})`);
+        // 429 限流：上游临时限流时自动重试（带指数退避），避免一次限流直接失败
+        const MAX_RETRY = 2;
+        for (let attempt = 0; ; attempt += 1) {
+            const response = await axios.post(
+                `${endpoint}/agent/direct/relay?token=${encodeURIComponent(token)}`,
+                {
+                    baseUrl: options.baseUrl,
+                    apiKey: options.apiKey,
+                    method: options.method || "POST",
+                    path: options.path,
+                    body: options.kind === "blob" ? undefined : options.body,
+                    kind: options.kind || "json",
+                    headers: options.headers || {},
+                },
+                { signal: options.signal, validateStatus: () => true },
+            );
+            const data = response.data as { ok?: boolean; data?: string; contentType?: string; error?: string };
+            if (data && data.ok === false && response.status === 429 && attempt < MAX_RETRY && !options.signal?.aborted) {
+                // 上游限流，等待后重试（retry-after 若提供则用之，否则递增退避）
+                const retryAfter = Number(response.headers?.["retry-after"]) || 2000 * (attempt + 1);
+                await new Promise((resolve) => setTimeout(resolve, retryAfter));
+                continue;
+            }
+            if (data && data.ok === false) {
+                throw new Error(data.error || `中继请求失败 (HTTP ${response.status})`);
+            }
+            if (options.kind === "blob") {
+                if (!data?.ok || !data.data) throw new Error(data?.error || "中继失败");
+                const binary = atob(data.data);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                return new Blob([bytes], { type: data.contentType || "application/octet-stream" });
+            }
+            return data;
         }
-        if (options.kind === "blob") {
-            if (!data?.ok || !data.data) throw new Error(data?.error || "中继失败");
-            const binary = atob(data.data);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            return new Blob([bytes], { type: data.contentType || "application/octet-stream" });
-        }
-        return data;
     }
     // 直连回退（无 agent 时，可能被 CORS 拦截）
     const target = /^https?:\/\//i.test(options.path) ? options.path : buildApiUrl(options.baseUrl, options.path);

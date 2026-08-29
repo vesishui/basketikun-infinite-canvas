@@ -42,4 +42,8 @@ The current release needs manual verification in these areas:
 - Settings import/export and WebDAV-related configuration.
 - Local storage settings: the Settings page should provide a Local storage tab that reads only the `infinite-canvas` database and shows IndexedDB usage, total site usage, browser quota, quota percentage, and per-object-store record counts and content size; refreshing after local data changes should update the figures without blocking the rest of the page.
 
+- Canvas-channel direct chat node mapping: with the canvas-channel model selected in the right-side Agent panel, `@`-referenced nodes (e.g. @参考视频3) should keep their display in the message bubble unchanged, while the text sent to the third-party model should include a node mapping list (mention=@label, nodeId, title, type); the model should use the nodeId with tools such as `canvas_get_state` to precisely locate and operate the node instead of guessing by label or title.
+
+- Canvas-channel multi-session: switching third-party channels or models should keep previous conversation history and allow returning to it in the history page; clicking New Conversation should start a new session without deleting old ones; only deleting a session removes its history. The canvas-channel model reasoning-effort dropdown should show low/medium/high options (not empty), and the selected effort should be forwarded to the upstream API (effective for reasoning models such as deepseek).
+
 The Chinese version contains the complete item-by-item acceptance checklist.

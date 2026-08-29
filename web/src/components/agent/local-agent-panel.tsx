@@ -124,9 +124,8 @@ function conversationBootstrapView(conversation: AgentConversationState) {
     return { bootstrapStatus, mcpStartupStatuses };
 }
 
-// 画布渠道会话持久化：作为"历史"页的一条可恢复记录
-const CANVAS_SESSION_ID = "canvas-direct-session";
-const CANVAS_SESSION_STORAGE_KEY = "canvas-agent-direct-session";
+// 画布渠道会话持久化：作为"历史"页的多条可恢复记录（每个会话一个 id，删除才消失）
+const CANVAS_SESSION_STORAGE_KEY = "canvas-agent-direct-sessions-v2";
 // Agent 运行日志持久化（刷新页面后保留）
 const AGENT_EVENT_LOGS_STORAGE_KEY = "canvas-agent-event-logs";
 // 画布渠道可用的画布操作工具（与 canvas-agent 白名单一致），让第三方模型也能创建/修改/选中画布节点
@@ -157,6 +156,7 @@ type CanvasDirectSession = {
     name: string;
     createdAt: number;
     updatedAt: number;
+    model: string; // 绑定的渠道模型，用于切换时匹配
     messages: AgentChatItem[];
     history: Array<{ role: "user" | "assistant"; content: string }>;
 };
@@ -246,8 +246,18 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         canvasChannelActiveRef.current = active;
         setCanvasChannelActiveState(active);
     };
-    // 画布渠道会话（持久化到 localStorage，同时作为"历史"页的一条记录）
-    const canvasSessionRef = useRef<CanvasDirectSession | null>(null);
+    // 画布渠道会话：多会话持久化到 localStorage（历史页可见，删除才消失，切换渠道/模型不丢）
+    const canvasSessionsRef = useRef<CanvasDirectSession[]>([]);
+    const activeCanvasSessionIdRef = useRef<string>("");
+    const [activeCanvasSessionId, setActiveCanvasSessionIdState] = useState<string>("");
+    const setActiveCanvasSessionId = (id: string) => {
+        activeCanvasSessionIdRef.current = id;
+        setActiveCanvasSessionIdState(id);
+    };
+    const persistCanvasSessions = () => {
+        try { localStorage.setItem(CANVAS_SESSION_STORAGE_KEY, JSON.stringify(canvasSessionsRef.current)); } catch { /* ignore */ }
+    };
+    const activeCanvasSession = () => canvasSessionsRef.current.find((s) => s.id === activeCanvasSessionIdRef.current) || null;
     const resolveCanvasChannelModel = () => {
         const cfg = useConfigStore.getState().config;
         const channels = cfg.channels || [];
@@ -265,40 +275,95 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     };
     const saveCanvasSession = (messages: AgentChatItem[]) => {
         const firstUser = [...messages].reverse().find((m) => m.role === "user");
-        const prev = canvasSessionRef.current;
         const now = Date.now();
+        const activeId = activeCanvasSessionIdRef.current;
+        const prev = canvasSessionsRef.current.find((s) => s.id === activeId) || null;
+        const model = resolveCanvasChannelModel()?.model || prev?.model || "";
+        // 当前画布渠道模型变化时，自动新建会话绑定新模型（旧会话保留，可切回）
+        let sessionId = activeId;
+        let target = prev;
+        if (target && model && target.model && target.model !== model) {
+            sessionId = randomId();
+            target = null;
+            setActiveCanvasSessionId(sessionId);
+        }
         const session: CanvasDirectSession = {
-            id: CANVAS_SESSION_ID,
-            name: prev?.name || compactText(firstUser?.text || "") || "画布渠道对话",
-            createdAt: prev?.createdAt || now,
+            id: sessionId,
+            name: target?.name || compactText(firstUser?.text || "") || "画布渠道对话",
+            createdAt: target?.createdAt || now,
             updatedAt: now,
+            model: model || target?.model || "",
             messages,
             history: directChatHistoryRef.current,
         };
-        canvasSessionRef.current = session;
-        try { localStorage.setItem(CANVAS_SESSION_STORAGE_KEY, JSON.stringify(session)); } catch { /* ignore */ }
+        const next = canvasSessionsRef.current.filter((s) => s.id !== sessionId);
+        next.push(session);
+        canvasSessionsRef.current = next;
+        persistCanvasSessions();
     };
-    const clearCanvasSession = () => {
-        canvasSessionRef.current = null;
+    const newCanvasSession = () => {
+        const model = resolveCanvasChannelModel()?.model || "";
+        const session: CanvasDirectSession = {
+            id: randomId(),
+            name: "画布渠道对话",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            model,
+            messages: [],
+            history: [],
+        };
+        canvasSessionsRef.current = [...canvasSessionsRef.current, session];
+        persistCanvasSessions();
         setCanvasChat([]);
         directChatHistoryRef.current = [];
-        try { localStorage.removeItem(CANVAS_SESSION_STORAGE_KEY); } catch { /* ignore */ }
+        setActiveCanvasSessionId(session.id);
     };
-    const canvasThreadSummary = (): AgentThreadSummary | null => {
-        const session = canvasSessionRef.current;
-        if (!session || !session.messages.length) return null;
-        return { id: session.id, name: session.name, preview: session.name, createdAt: Math.floor(session.createdAt / 1000), updatedAt: Math.floor(session.updatedAt / 1000) };
+    const deleteCanvasSession = (sessionId: string) => {
+        canvasSessionsRef.current = canvasSessionsRef.current.filter((s) => s.id !== sessionId);
+        persistCanvasSessions();
+        if (activeCanvasSessionIdRef.current === sessionId) {
+            setCanvasChat([]);
+            directChatHistoryRef.current = [];
+            setActiveCanvasSessionId("");
+            if (canvasChannelActiveRef.current) setAgentState({ prompt: "", attachments: [], canvasReferences: [] });
+        }
     };
-    // 启动时恢复画布渠道会话（刷新页面后仍保留）
+    const resumeCanvasSession = (sessionId: string) => {
+        const session = canvasSessionsRef.current.find((s) => s.id === sessionId);
+        if (!session?.messages?.length) return;
+        setCanvasChat(session.messages);
+        directChatHistoryRef.current = Array.isArray(session.history) ? session.history : [];
+        setActiveCanvasSessionId(session.id);
+    };
+    const canvasThreadSummaries = (): AgentThreadSummary[] => {
+        return canvasSessionsRef.current
+            .filter((s) => s.messages.length)
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+            .map((session) => ({
+                id: session.id,
+                name: session.name,
+                preview: session.name,
+                createdAt: Math.floor(session.createdAt / 1000),
+                updatedAt: Math.floor(session.updatedAt / 1000),
+            }));
+    };
+    // 启动时恢复画布渠道多会话（刷新页面后仍保留）
     useEffect(() => {
         try {
             const raw = localStorage.getItem(CANVAS_SESSION_STORAGE_KEY);
             if (!raw) return;
-            const session = JSON.parse(raw) as CanvasDirectSession;
-            if (session?.messages?.length && session.messages.some((m) => m.role === "user")) {
-                canvasSessionRef.current = session;
-                setCanvasChat(session.messages);
-                directChatHistoryRef.current = Array.isArray(session.history) ? session.history : [];
+            const parsed = JSON.parse(raw);
+            const sessions = Array.isArray(parsed) ? parsed : [];
+            if (sessions.length) canvasSessionsRef.current = sessions.filter((s) => s?.messages?.length && s.messages.some((m) => m.role === "user"));
+            // 自动恢复当前渠道模型的最近会话
+            const model = resolveCanvasChannelModel()?.model || "";
+            const current = model
+                ? canvasSessionsRef.current.find((s) => s.model === model) || null
+                : null;
+            if (current) {
+                setCanvasChat(current.messages);
+                directChatHistoryRef.current = Array.isArray(current.history) ? current.history : [];
+                setActiveCanvasSessionId(current.id);
             }
         } catch { /* ignore */ }
     }, []);
@@ -336,7 +401,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             baseUrl: ch.baseUrl,
             apiKey: ch.apiKey,
             displayName,
-            agentModel: { id: `canvas:${resolvedModel}`, model: resolvedModel, displayName, defaultReasoningEffort: "low" as const, supportedReasoningEfforts: [], isDefault: false },
+            agentModel: { id: `canvas:${resolvedModel}`, model: resolvedModel, displayName, defaultReasoningEffort: "low" as const, supportedReasoningEfforts: ["low", "medium", "high"].map((reasoningEffort) => ({ reasoningEffort: reasoningEffort as AgentReasoningEffort })), isDefault: false },
         };
     }, [canvasConfig]);
     // 合并 codex 模型列表与画布渠道模型,canvasChannelModel 与 codex 列表同 model 时替换而非追加,避免 model 重复导致 key 冲突与双勾选
@@ -466,8 +531,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             const currentThreadId = current.activeThreadId || data.workspace?.activeThreadId || "";
             if (!data.conversation && currentThreadId !== current.activeThreadId) sequence = applyWorkspaceChange({ activeThreadId: currentThreadId });
             if (sequence !== loadThreadsSequenceRef.current || useAgentStore.getState().activeThreadId !== currentThreadId) return;
-            const canvasEntry = canvasThreadSummary();
-            setAgentState({ threads: canvasEntry ? [canvasEntry, ...(data.data || [])] : (data.data || []), workspacePath: data.workspace?.workspacePath || "" });
+            const canvasEntries = canvasThreadSummaries();
+            setAgentState({ threads: [...canvasEntries, ...(data.data || [])], workspacePath: data.workspace?.workspacePath || "" });
             if (currentThreadId && !skipHistory) {
                 await loadThreadSnapshot(currentThreadId, sequence, undefined, expectedTurnId);
             } else {
@@ -896,15 +961,22 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             setCanvasChat((prev) => [...prev, { id: assistantId, itemId: "synthetic:assistant", clientMessageId: assistantId, threadId: "", turnId: "", role: "assistant", title: canvasChannelModel!.displayName, text: "思考中…" }]);
             addEventLog(rt("sendTask"), `${canvasChannelModel!.displayName} · ${compactText(text) || rt("attachmentsOnly")}`);
             try {
-                // 把 @ 引用的画布节点文本拼进用户消息（让模型看到引用内容）
+                // 把 @ 引用的画布节点文本拼进用户消息，并附上 @标签 → nodeId 映射：
+                // 「参考视频3」这类标签是按引用顺序自动生成的，第三方模型无法靠标签反查节点，必须给出 nodeId 才能精确定位。
+                // 界面显示不变（userMessageItem 仍存 @label），只有发送给模型的文本里带上 nodeId。
                 const referenceText = messageReferences.map((r) => r.text).filter(Boolean).join("\n\n");
-                const userContent = referenceText ? `${text}\n\n[引用画布内容]\n${referenceText}` : text;
+                const nodeMapping = messageReferences.length
+                    ? messageReferences.map((r, index) => `${index + 1}. mention=@${r.label}, nodeId=${r.nodeId}, title=${r.title || "(无标题)"}, type=${r.kind}`).join("\n")
+                    : "";
+                let userContent = text;
+                if (referenceText) userContent += `\n\n[引用画布内容]\n${referenceText}`;
+                if (nodeMapping) userContent += `\n\n[节点映射] 用户消息中的 @引用对应以下画布节点，需要读取或操作这些节点时，请用对应的 nodeId 精确调用画布工具（如 canvas_get_state），不要按标签或标题猜测：\n${nodeMapping}`;
                 // 独立维护对话历史（不走 store 的 scope/merge，保证多轮顺序正确）
                 const history = [...directChatHistoryRef.current, { role: "user" as const, content: userContent }];
                 const res = await fetch(`${endpoint}/agent/direct/chat?token=${encodeURIComponent(token)}`, {
                     method: "POST",
                     headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ baseUrl: canvasChannelModel!.baseUrl, apiKey: canvasChannelModel!.apiKey, model: canvasChannelModel!.model, messages: history, tools: DIRECT_CHAT_CANVAS_TOOLS }),
+                    body: JSON.stringify({ baseUrl: canvasChannelModel!.baseUrl, apiKey: canvasChannelModel!.apiKey, model: canvasChannelModel!.model, messages: history, tools: DIRECT_CHAT_CANVAS_TOOLS, reasoningEffort: reasoningEffort || undefined }),
                 });
                 if (!res.ok) {
                     const data = (await res.json().catch(() => ({}))) as { error?: string };
@@ -1288,10 +1360,20 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const startNewThread = async () => {
         const current = useAgentStore.getState();
         if (!current.connected) return;
-        // 画布渠道：新对话 = 清空画布会话（不碰 Codex 线程，不依赖 Codex 会话状态）
-        if (canvasChannelActiveRef.current) {
-            if (current.sending || current.waiting || current.loadingThreads) return;
-            clearCanvasSession();
+        // 画布渠道：新对话 = 新建画布会话（旧会话保留，可在历史页切回）。
+        // 历史里存在画布会话时也走这里，确保从历史页点"新建"能开新的画布会话。
+        const canvasModel = resolveCanvasChannelModel();
+        const hasCanvasSessions = canvasThreadSummaries().length > 0;
+        if (canvasChannelActiveRef.current || (hasCanvasSessions && canvasModel)) {
+            if (current.sending || current.waiting) return;
+            // 确保进入画布渠道模式
+            if (!canvasChannelActiveRef.current && canvasModel) {
+                localStorage.setItem("canvas-agent-model", canvasModel.model);
+                setCanvasChannelActive(true);
+                setAgentState({ model: canvasModel.model });
+            }
+            newCanvasSession();
+            void loadThreads();
             setAgentState({ activeTab: "chat", activity: rt("newConversation"), prompt: "", attachments: [], canvasReferences: [], activeTurnId: "" });
             return;
         }
@@ -1318,17 +1400,19 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const resumeThread = async (threadId: string) => {
         const current = useAgentStore.getState();
         if (!current.connected || !threadId) return;
-        // 画布渠道会话：从持久化记录恢复（不依赖 Codex 会话状态，避免被 busy 挡住）
-        if (threadId === CANVAS_SESSION_ID) {
-            if (current.sending || current.waiting || current.loadingThreads) return;
-            const session = canvasSessionRef.current;
+        // 画布渠道会话：从持久化记录按会话 id 恢复（不依赖 Codex 会话状态，避免被 busy 挡住）
+        if (canvasSessionsRef.current.some((s) => s.id === threadId)) {
+            if (current.sending || current.waiting) return;
+            const session = canvasSessionsRef.current.find((s) => s.id === threadId);
             if (!session?.messages?.length || !session.messages.some((m) => m.role === "user")) return;
+            // 同步更新 ref 和 state，确保当前渲染周期就能读到正确的画布渠道状态
             setCanvasChat(session.messages);
             directChatHistoryRef.current = session.history || [];
+            setActiveCanvasSessionId(session.id);
+            setCanvasChannelActive(true);
             const canvasModel = resolveCanvasChannelModel();
             if (canvasModel) {
                 localStorage.setItem("canvas-agent-model", canvasModel.model);
-                setCanvasChannelActive(true);
                 setAgentState({ model: canvasModel.model, activeTab: "chat", activeTurnId: "", prompt: "", attachments: [], canvasReferences: [] });
             } else {
                 setAgentState({ activeTab: "chat", activeTurnId: "", prompt: "", attachments: [], canvasReferences: [] });
@@ -1371,9 +1455,9 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         let deletedCount = 0;
         try {
             for (const threadId of new Set(threadIds)) {
-                if (threadId === CANVAS_SESSION_ID) {
-                    clearCanvasSession();
-                    if (canvasChannelActiveRef.current) setAgentState({ prompt: "", attachments: [], canvasReferences: [] });
+                const isCanvasSession = canvasSessionsRef.current.some((s) => s.id === threadId);
+                if (isCanvasSession) {
+                    deleteCanvasSession(threadId);
                     deletedCount += 1;
                     continue;
                 }
