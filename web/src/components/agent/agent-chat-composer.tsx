@@ -124,7 +124,7 @@ function AgentModelControls({ models, model, reasoningEffort, onModelChange, onR
                             <ChevronUp className="hidden size-3 opacity-50 @min-[660px]:block" />
                         </SelectTrigger>
                         <SelectContent data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="z-[1200] w-64 rounded-xl border border-border/70 bg-popover p-1 shadow-xl">
-                            {models.map((item) => <SelectItem key={item.model} value={item.model}>{item.displayName || item.model}</SelectItem>)}
+                            {models.map((item, index) => <SelectItem key={`${item.model}-${item.displayName || ""}-${index}`} value={item.model}>{item.displayName || item.model}</SelectItem>)}
                         </SelectContent>
                     </Select>
                 </span>
@@ -138,7 +138,7 @@ function AgentModelControls({ models, model, reasoningEffort, onModelChange, onR
                             <ChevronUp className="hidden size-3 opacity-50 @min-[660px]:block" />
                         </SelectTrigger>
                         <SelectContent data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="z-[1200] min-w-32 rounded-xl border border-border/70 bg-popover p-1 shadow-xl">
-                            {current.supportedReasoningEfforts.map((item) => <SelectItem key={item.reasoningEffort} value={item.reasoningEffort}>{effortLabel(item.reasoningEffort)}</SelectItem>)}
+                            {current.supportedReasoningEfforts.map((item, index) => <SelectItem key={`${item.reasoningEffort}-${index}`} value={item.reasoningEffort}>{effortLabel(item.reasoningEffort)}</SelectItem>)}
                         </SelectContent>
                     </Select>
                 </span>

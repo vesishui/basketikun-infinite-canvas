@@ -41,6 +41,8 @@ const DIRECT_CHAT_TOOL_NAMES: ToolName[] = [
     "generation_get_status",
 ];
 const DIRECT_CHAT_MAX_TOOL_ROUNDS = 8;
+// 画布渠道直连对话的中断控制：/agent/direct/interrupt 可中止当前进行中的 direct chat 请求
+let directChatAbort: AbortController | null = null;
 
 /** OpenAI 不允许 $ref/$defs，这里把 zod 转出的 schema 清洗成自包含 JSON Schema（record 字段替换为通用 object）。 */
 function sanitizeOpenAiSchema(node: unknown): unknown {
@@ -282,16 +284,23 @@ export function startHttpServer() {
         let workingMessages = messages as Array<Record<string, unknown>>;
         let finalContent = "";
         // 工具调用循环：模型可多轮调用画布工具（会经画布页面的确认卡片），最多 DIRECT_CHAT_MAX_TOOL_ROUNDS 轮
+        const abortController = new AbortController();
+        directChatAbort = abortController;
+        const signal = abortController.signal;
+        try {
         roundLoop: for (let round = 0; round <= DIRECT_CHAT_MAX_TOOL_ROUNDS; round++) {
             for (let attempt = 0; attempt < 5; attempt++) {
+                if (signal.aborted) { res.status(499).json({ ok: false, error: "用户取消了请求" }); return; }
                 let upstream;
                 try {
                     upstream = await fetch(target, {
                         method: "POST",
                         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
                         body: JSON.stringify({ model, messages: workingMessages, ...(toolDefs.length ? { tools: toolDefs, tool_choice: "auto" } : {}), stream: false }),
+                        signal,
                     });
                 } catch (error) {
+                    if (signal.aborted || (error instanceof Error && error.name === "AbortError")) { res.status(499).json({ ok: false, error: "用户取消了请求" }); return; }
                     const message = error instanceof Error ? error.message : String(error);
                     res.status(502).json({ ok: false, error: `上游连接失败: ${message}` });
                     return;
@@ -358,7 +367,18 @@ export function startHttpServer() {
                 break; // 本轮工具已执行，进入下一轮
             }
         }
+        } finally {
+            if (directChatAbort === abortController) directChatAbort = null;
+        }
         res.json({ ok: true, content: finalContent, toolCalls: executedTools });
+    }));
+    // 中断当前进行中的画布渠道直连对话请求（direct chat 的 fetch 由 AbortController 控制）
+    app.post("/agent/direct/interrupt", route(async (req, res) => {
+        const controller = directChatAbort;
+        if (!controller) return res.status(409).json({ ok: false, error: "当前没有可停止的任务" });
+        controller.abort();
+        directChatAbort = null;
+        res.json({ ok: true });
     }));
     // 画布渠道图片/视频/音频等 OpenAI 兼容接口的中继：浏览器直连第三方会被 CORS 拦截，
     // 前端把请求发给本端点，后端转发到第三方（图片生成/编辑、视频创建/查询/下载都走这里）。

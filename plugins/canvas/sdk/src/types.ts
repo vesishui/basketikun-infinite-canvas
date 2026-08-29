@@ -280,6 +280,9 @@ export type CanvasNodeDefinition = {
     autoOpenPanel?: boolean; // 为 true 时:单击节点自动打开自定义 Panel(默认仅内置节点单击自动打开)
     // 复用宿主内置生成面板;与自定义 Panel 二选一(同时提供时优先 Panel)
     useBuiltinPanel?: CanvasBuiltinPanelConfig;
+    // 为 true 时:宿主在视口级 fixed 容器里渲染本节点 Panel(而非默认的节点下方面板),
+    // 让插件可以在不受画布缩放变换影响的前提下承载全屏 Modal/弹窗。
+    fullscreenPanel?: boolean;
     // 为 true 时:宿主自动在工具条加「交互 ⇄ 移动」开关,并按 metadata.interactive 控制内容层指针事件。
     // 默认(interactive 未设/为 false)为「移动」态:内容不吃指针,拖动整块移动节点;
     // 切到「交互」态后内容可点击/拖拽(如全景转视角、iframe 操作)。适合内部有交互的展示型节点。

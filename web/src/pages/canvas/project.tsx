@@ -19,7 +19,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
-import { App, Button, Modal } from "antd";
+import { App, Button, Image, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
@@ -1606,6 +1606,33 @@ function InfiniteCanvasPage() {
         saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
     }, []);
 
+    // 清空节点自身内容（图片/视频/音频），保留节点与引用关系
+    const clearNodeContent = useCallback((node: CanvasNodeData) => {
+        if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return;
+        setNodes((prev) =>
+            prev.map((n) =>
+                n.id === node.id
+                    ? {
+                          ...n,
+                          metadata: {
+                              ...n.metadata,
+                              content: undefined,
+                              images: undefined,
+                              storageKey: undefined,
+                              primaryImageId: undefined,
+                              naturalWidth: undefined,
+                              naturalHeight: undefined,
+                              bytes: undefined,
+                              mimeType: undefined,
+                              status: "idle" as const,
+                              errorDetails: undefined,
+                          },
+                      }
+                    : n,
+            ),
+        );
+    }, [setNodes]);
+
     const downloadBatchImage = useCallback((node: CanvasNodeData, imageId: string) => {
         const image = node.metadata?.images?.find((item) => item.id === imageId);
         if (!image?.content) return;
@@ -3081,18 +3108,27 @@ function InfiniteCanvasPage() {
                             <rect width="100%" height="100%" fill={theme.canvas.selectionFill} stroke={theme.canvas.selectionStroke} strokeOpacity={0.55} strokeWidth={1 / viewport.k} strokeDasharray={`${6 / viewport.k} ${4 / viewport.k}`} />
                         </svg>
                     ) : null}
-                    {pendingConnectionCreate ? <ConnectionCreateMenu pending={pendingConnectionCreate} onCreate={(type) => createConnectedNode(type, pendingConnectionCreate)} onClose={cancelPendingConnectionCreate} /> : null}
-                    {nodeCreatePosition ? (
-                        <NodeCreateMenu
-                            position={nodeCreatePosition}
-                            onCreate={(type) => {
-                                createNode(type, nodeCreatePosition);
-                                setNodeCreatePosition(null);
-                            }}
-                            onClose={() => setNodeCreatePosition(null)}
-                        />
-                    ) : null}
                 </InfiniteCanvas>
+
+                {/* 创建菜单渲染在缩放容器之外,用世界→屏幕换算定位,避免随画布缩放变大变小 */}
+                {pendingConnectionCreate ? (
+                    <ConnectionCreateMenu
+                        pending={{ ...pendingConnectionCreate, position: { x: viewport.x + pendingConnectionCreate.position.x * viewport.k, y: viewport.y + pendingConnectionCreate.position.y * viewport.k } }}
+                        onCreate={(type) => createConnectedNode(type, pendingConnectionCreate)}
+                        onClose={cancelPendingConnectionCreate}
+                    />
+                ) : null}
+                {nodeCreatePosition ? (
+                    <NodeCreateMenu
+                        position={{ x: viewport.x + nodeCreatePosition.x * viewport.k, y: viewport.y + nodeCreatePosition.y * viewport.k }}
+                        viewportSize={size}
+                        onCreate={(type) => {
+                            createNode(type, nodeCreatePosition);
+                            setNodeCreatePosition(null);
+                        }}
+                        onClose={() => setNodeCreatePosition(null)}
+                    />
+                ) : null}
 
                 <CanvasNodeHoverToolbar
                     node={isNodeDragging || isNodeResizing || nodeImageSettingsOpen || expandedBatchNodeIds.has(toolbarNode?.id || "") ? null : toolbarNode}
@@ -3107,6 +3143,7 @@ function InfiniteCanvasPage() {
                     onGenerateImage={generateImageFromTextNode}
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
+                    onClearContent={clearNodeContent}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
                     onCrop={(node) => setCropNodeId(node.id)}
@@ -3212,17 +3249,24 @@ function InfiniteCanvasPage() {
 
                 {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
 
-                <Modal
-                    title={t("canvas.projectPage.imageDetails")}
-                    open={Boolean(previewContent)}
-                    centered
-                    onCancel={() => setPreviewNodeId(null)}
-                    footer={null}
-                    width="auto"
-                    styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "80vh" } }}
-                >
-                    {previewContent ? <img src={previewContent} alt={previewNode?.title || t("assets.kinds.image")} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} /> : null}
-                </Modal>
+                {/* 图片详情：全屏预览（滚轮缩放 / 拖拽 / 旋转 / 下载，antd ImagePreview） */}
+                {previewContent ? (
+                    <Image
+                        src={previewContent}
+                        alt={previewNode?.title || t("assets.kinds.image")}
+                        style={{ display: "none" }}
+                        preview={{
+                            open: true,
+                            src: previewContent,
+                            onOpenChange: (open) => {
+                                if (!open) {
+                                    setPreviewNodeId(null);
+                                    setPreviewImageId(null);
+                                }
+                            },
+                        }}
+                    />
+                ) : null}
 
                 <Modal
                     title={t("canvas.projectPage.clearTitle")}

@@ -22,7 +22,7 @@ import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type Ag
 import { useConfigStore } from "@/stores/use-config-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
-import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, discoverAgentConfig, fetchAgentJson, interruptCodexTurn, postCodexApproval, postState, postToolResult } from "@/services/api/canvas-agent";
+import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, discoverAgentConfig, fetchAgentJson, interruptCodexTurn, interruptDirectChat, postCodexApproval, postState, postToolResult } from "@/services/api/canvas-agent";
 import { AgentChatTimeline, AgentTaskProgress, AgentUsageBar } from "./agent-chat";
 import { AgentChatComposer } from "./agent-chat-composer";
 import { AgentConnectView } from "./agent-connect-view";
@@ -339,6 +339,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             agentModel: { id: `canvas:${resolvedModel}`, model: resolvedModel, displayName, defaultReasoningEffort: "low" as const, supportedReasoningEfforts: [], isDefault: false },
         };
     }, [canvasConfig]);
+    // 合并 codex 模型列表与画布渠道模型,canvasChannelModel 与 codex 列表同 model 时替换而非追加,避免 model 重复导致 key 冲突与双勾选
+    const allAgentModels = useMemo(() => {
+        if (!canvasChannelModel) return models;
+        const exists = models.some((m) => m.model === canvasChannelModel.model);
+        if (exists) return models.map((m) => (m.model === canvasChannelModel.model ? canvasChannelModel.agentModel : m));
+        return [...models, canvasChannelModel.agentModel];
+    }, [models, canvasChannelModel]);
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
     // 画布渠道直连对话的独立历史（不走 store 的 scope/merge，避免多轮顺序错乱）
     const directChatHistoryRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
@@ -999,7 +1006,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         if (!connected || (!sending && !waiting)) return;
         setAgentState({ activity: rt("stopping") });
         try {
-            await interruptCodexTurn(endpoint, token, useAgentStore.getState().activeThreadId || undefined);
+            const currentModel = useAgentStore.getState().model;
+            const isCanvasSend = Boolean(canvasChannelModel && currentModel === canvasChannelModel.model);
+            if (isCanvasSend) {
+                await interruptDirectChat(endpoint, token);
+            } else {
+                await interruptCodexTurn(endpoint, token, useAgentStore.getState().activeThreadId || undefined);
+            }
             addEventLog(rt("stopTask"), rt("taskStopped"));
         } catch (error) {
             setAgentState({ activity: rt("stopFailed") });
@@ -1719,11 +1732,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                         onConfirmToolsChange={(confirmTools) => setAgentState({ confirmTools })}
                         permissionMode={permissionMode}
                         onPermissionModeChange={changePermissionMode}
-                        models={canvasChannelModel ? [...models, canvasChannelModel.agentModel] : models}
+                        models={allAgentModels}
                         model={model}
                         reasoningEffort={reasoningEffort}
                         onModelChange={(model) => {
-                            const allModels = canvasChannelModel ? [...models, canvasChannelModel.agentModel] : models;
+                            const allModels = allAgentModels;
                             const selected = allModels.find((item) => item.model === model);
                             if (!selected) return;
                             const effort = selected.defaultReasoningEffort || selected.supportedReasoningEfforts[0]?.reasoningEffort;

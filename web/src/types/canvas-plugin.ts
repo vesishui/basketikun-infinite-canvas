@@ -112,6 +112,10 @@ export type CanvasNodeDefinition = {
     transparentBackground?: boolean; // Makes the node card transparent so SVG or vector content blends into the canvas.
     autoOpenPanel?: boolean; // Opens a custom Panel on click; automatic opening otherwise applies only to built-ins.
     useBuiltinPanel?: CanvasBuiltinPanelConfig; // Reuses the built-in generation panel instead of a custom Panel.
+    // When true, the Panel is rendered in a fullscreen fixed container (viewport-level) instead of the
+    // usual below-node panel, letting plugins host fullscreen modals/dialogs without being affected by
+    // the canvas scale transform.
+    fullscreenPanel?: boolean;
     // Lets the host provide an Interaction/Move toolbar toggle and control pointer events through metadata.interactive.
     interactionToggle?: boolean;
     // With interactionToggle, true forces interactive content, ignores metadata.interactive, and hides the toggle.

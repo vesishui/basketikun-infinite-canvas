@@ -442,7 +442,14 @@ export const CanvasNode = React.memo(function CanvasNode({
             {!referenceSelectionState && !isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
             {!referenceSelectionState && (definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config ? <ConnectionHandleDot side="right" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "source")} /> : null}
 
-            {showPanel && !isGroup && renderPanel ? <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div> : null}
+            {showPanel && !isGroup && renderPanel ? (
+                definition?.fullscreenPanel ? (
+                    // 全屏 Panel:渲染在视口级 fixed 容器(无画布缩放变换影响),供插件承载全屏 Modal/弹窗
+                    <div className="fixed inset-0 z-[200]">{renderPanel(data)}</div>
+                ) : (
+                    <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div>
+                )
+            ) : null}
         </div>
     );
 });
@@ -492,15 +499,26 @@ function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererP
 
 function LoadingContent({ node, theme }: Pick<NodeContentRendererProps, "node" | "theme">) {
     const { t } = useTranslation();
+    const detail = node.metadata?.errorDetails;
+    // 解析 "进度:45%" → { percent: 45 }；其他文本 → null
+    const progressMatch = typeof detail === "string" ? detail.match(/^进度[:：]\s*(\d+)\s*%$/) : null;
+    const percent = progressMatch ? Math.min(100, Math.max(0, Number(progressMatch[1]))) : null;
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.activeStroke }}>
             <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
             <span className="text-[10px] tracking-[0.2em]">{t("canvas.node.generating")}</span>
-            {node.metadata?.errorDetails && (
-                <span className="max-w-[200px] truncate text-[10px]" style={{ color: theme.node.muted }} title={node.metadata.errorDetails}>
-                    {node.metadata.errorDetails}
+            {percent !== null ? (
+                <div className="flex w-3/4 flex-col items-center gap-1.5">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: theme.node.stroke }}>
+                        <div className="h-full rounded-full transition-all duration-300" style={{ width: `${percent}%`, background: theme.node.activeStroke }} />
+                    </div>
+                    <span className="text-[10px]" style={{ color: theme.node.muted }}>{percent}%</span>
+                </div>
+            ) : detail ? (
+                <span className="max-w-[200px] truncate text-[10px]" style={{ color: theme.node.muted }} title={detail}>
+                    {detail}
                 </span>
-            )}
+            ) : null}
         </div>
     );
 }

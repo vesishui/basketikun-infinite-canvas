@@ -1,0 +1,17 @@
+{
+    "name": "canvas-plugin-script-generator",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "三步分镜脚本生成器:从剧本/故事生成分镜脚本,含确认镜头/准备资产/合成提示词",
+    "scripts": {
+        "build": "node build.mjs",
+        "dev": "node build.mjs --watch",
+        "typecheck": "tsc --noEmit"
+    },
+    "devDependencies": {
+        "@infinite-canvas/plugin-sdk": "file:../sdk",
+        "@types/react": "19.1.12",
+        "typescript": "^5"
+    }
+}

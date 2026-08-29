@@ -1,0 +1,19 @@
+{
+    "name": "canvas-plugin-camera-angle-studio",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "镜头视角标注台:场景图上拖拽箭头标注视角,实时联动焦段/光圈/俯仰,生成新视角(mock)",
+    "scripts": {
+        "build": "node build.mjs",
+        "build:umd": "node build-umd.mjs",
+        "dev": "node build.mjs --watch",
+        "typecheck": "tsc --noEmit"
+    },
+    "devDependencies": {
+        "@infinite-canvas/plugin-sdk": "file:../sdk",
+        "@types/react": "19.1.12",
+        "esbuild": "^0.25.0",
+        "typescript": "^5"
+    }
+}

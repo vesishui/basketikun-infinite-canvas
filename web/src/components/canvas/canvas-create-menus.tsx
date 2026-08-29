@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ImageIcon, List, Music2, Settings2, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -75,12 +75,33 @@ export function ConnectionCreateOption({ theme, icon, title, description, onClic
     );
 }
 
-export function NodeCreateMenu({ position, onCreate, onClose }: { position: Position; onCreate: (type: string) => void; onClose: () => void }) {
+export function NodeCreateMenu({ position, viewportSize, onCreate, onClose }: { position: Position; viewportSize?: { width: number; height: number }; onCreate: (type: string) => void; onClose: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     useNodeRegistryVersion();
     const menuRef = useRef<HTMLDivElement>(null);
     const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
+    const PADDING = 8;
+
+    const [displayPos, setDisplayPos] = useState<Position>(position);
+
+    // 渲染后测量菜单与定位父元素的真实尺寸,把位置限制在父容器(画布)内,
+    // 底部/右侧不超出画布;useLayoutEffect 在绘制前执行,避免闪跳。
+    useLayoutEffect(() => {
+        const menu = menuRef.current;
+        const parent = menu?.parentElement;
+        if (!menu || !parent) return;
+        const width = menu.offsetWidth;
+        const height = menu.offsetHeight;
+        const vw = parent.clientWidth;
+        const vh = parent.clientHeight;
+        setDisplayPos({
+            x: Math.min(Math.max(position.x, PADDING), Math.max(PADDING, vw - width - PADDING)),
+            y: Math.min(Math.max(position.y, PADDING), Math.max(PADDING, vh - height - PADDING)),
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [position, viewportSize?.width, viewportSize?.height]);
+
     // Close automatically when clicking outside the menu.
     useEffect(() => {
         const handlePointerDown = (event: PointerEvent) => {
@@ -89,27 +110,54 @@ export function NodeCreateMenu({ position, onCreate, onClose }: { position: Posi
         document.addEventListener("pointerdown", handlePointerDown, true);
         return () => document.removeEventListener("pointerdown", handlePointerDown, true);
     }, [onClose]);
+
     return (
         <div
             ref={menuRef}
-            className="absolute z-[120] max-h-[70vh] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur thin-scrollbar"
+            className="absolute z-[120] max-h-[60dvh] w-[248px] overflow-y-auto rounded-[14px] border p-2 shadow-2xl backdrop-blur-md thin-scrollbar"
             data-canvas-no-zoom
-            style={{ left: position.x, top: position.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
+            style={{ left: displayPos.x, top: displayPos.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
         >
-            <div className="mb-2 flex items-center justify-between px-1">
-                <span className="text-sm font-medium" style={{ color: theme.node.muted }}>
+            <div className="mb-1.5 flex items-center justify-between px-1">
+                <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
                     {t("canvas.createMenu.select")}
                 </span>
-                <button type="button" className="grid size-7 place-items-center rounded-lg opacity-55 transition hover:opacity-100" onClick={onClose} aria-label={t("canvas.createMenu.close")}>
-                    <X className="size-4" />
+                <button type="button" className="grid size-5 place-items-center rounded-lg text-xs opacity-55 transition hover:opacity-100" onClick={onClose} aria-label={t("canvas.createMenu.close")}>
+                    <X className="size-3" />
                 </button>
             </div>
-            <div className="grid gap-1">
+            <div className="grid gap-0.5">
                 {definitions.map((def) => (
-                    <ConnectionCreateOption key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.type)} />
+                    <NodeCreateOption key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.type)} />
                 ))}
             </div>
         </div>
+    );
+}
+
+/** 节点创建菜单里更紧凑的选项行(比 ConnectionCreateOption 更小) */
+function NodeCreateOption({ theme, icon, title, description, onClick }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes]; icon: React.ReactNode; title: string; description?: string; onClick?: () => void }) {
+    return (
+        <button
+            type="button"
+            className="flex h-11 w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 text-left transition"
+            style={{ color: theme.node.text }}
+            onClick={onClick}
+            onMouseEnter={(event) => (event.currentTarget.style.background = theme.node.fill)}
+            onMouseLeave={(event) => (event.currentTarget.style.background = "transparent")}
+        >
+            <span className="grid size-8 shrink-0 place-items-center rounded-lg" style={{ background: theme.node.fill, color: theme.node.muted }}>
+                {icon}
+            </span>
+            <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 text-[13px] font-semibold leading-4">{title}</span>
+                {description ? (
+                    <span className="mt-0.5 block truncate text-[11px]" style={{ color: theme.node.muted }}>
+                        {description}
+                    </span>
+                ) : null}
+            </span>
+        </button>
     );
 }
