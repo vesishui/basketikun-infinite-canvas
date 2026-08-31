@@ -27,6 +27,7 @@ export type RunPluginArgs = {
     config: AiConfig;
     prompt?: string;
     images?: string[];
+    audios?: string[]; // 参考音频 dataURL 数组，供视频/音频脚本使用（如音色克隆、视频配乐）
     messages?: unknown[];
     params?: Record<string, unknown>;
     signal?: AbortSignal;
@@ -170,6 +171,7 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
     const runner = new Function(
         "prompt",
         "images",
+        "audios",
         "messages",
         "params",
         "model",
@@ -190,6 +192,7 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
         return await runner(
             args.prompt || "",
             args.images || [],
+            args.audios || [],
             args.messages || [],
             args.params || {},
             config.model,
@@ -220,6 +223,7 @@ export function getPluginVariables(): PluginVariable[] {
     return [
         { name: "prompt", type: "string", desc: i18n.t("modelPlugin.variables.prompt"), capabilities: ["image", "video", "audio"] },
         { name: "images", type: "string[]", desc: i18n.t("modelPlugin.variables.images"), capabilities: ["image", "video"] },
+        { name: "audios", type: "string[]", desc: i18n.t("modelPlugin.variables.audios"), capabilities: ["video", "audio"] },
         { name: "messages", type: "{ role, content }[]", desc: i18n.t("modelPlugin.variables.messages"), capabilities: ["text"] },
         { name: "params", type: "object", desc: i18n.t("modelPlugin.variables.params") },
         { name: "model", type: "string", desc: i18n.t("modelPlugin.variables.model") },
@@ -305,11 +309,21 @@ return (data.candidates || [])
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.videoOpenai")}
 const headers = { "Content-Type": "application/json", Authorization: \`Bearer \${apiKey}\` };
+// 参考图上传图床(公网URL)
+const refImageUrls = [];
+for (const du of images || []) {
+  const u = await uploadImage(du);
+  if (u) refImageUrls.push(u);
+}
+// 参考音频: 直接传 dataURL（图床返回的是 .png 链接，不适合音频，aicost 等渠道接受 audio dataURL）
+const body = { model, prompt, seconds: params.seconds };
+if (refImageUrls.length) body.images = refImageUrls;
+if ((audios || []).length) body.audios = audios;
 const task = await request({
   method: "post",
   url: \`\${baseUrl}/v1/videos\`,
   headers,
-  data: { model, prompt, seconds: params.seconds },
+  data: body,
 });
 return await poll(
   () => request({ method: "get", url: \`\${baseUrl}/v1/videos/\${task.id}\`, headers }),
@@ -347,6 +361,8 @@ return await poll(
         {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.audioOpenai")}
+// 可用: prompt, audios(dataURL[]), params{voice,format,speed,instructions}, model, baseUrl, apiKey, uploadImage
+// 有参考音频时 audios 为音频 dataURL 数组，可用于音色克隆（如 Qwen3-TTS generate_voice_clone）
 return await request({
   method: "post",
   url: \`\${baseUrl}/v1/audio/speech\`,

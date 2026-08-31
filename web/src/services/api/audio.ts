@@ -20,7 +20,7 @@ function aiHeaders(config: AiConfig) {
     };
 }
 
-export async function requestAudioGeneration(config: AiConfig, prompt: string, options?: RequestOptions): Promise<Blob> {
+export async function requestAudioGeneration(config: AiConfig, prompt: string, options?: RequestOptions & { references?: Array<{ url?: string; dataUrl?: string }> }): Promise<Blob> {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.audioModel);
     const model = requestConfig.model.trim();
     const format = normalizeAudioFormatValue(config.audioFormat);
@@ -30,11 +30,14 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
         if (!requestConfig.baseUrl.trim()) throw new Error(apiText("baseUrlRequired"));
         if (!requestConfig.apiKey.trim()) throw new Error(apiText("apiKeyRequired"));
         try {
+            // 参考音频（音色克隆）：传入脚本的 audios 数组，脚本用参考音频 + generate_voice_clone 克隆音色生成
+            const refs = (options?.references || []).map((ref) => ref.dataUrl || ref.url || "").filter(Boolean);
             const result = await runModelPlugin({
                 capability: "audio",
                 script,
                 config: requestConfig,
                 prompt,
+                audios: refs,
                 params: { voice: normalizeAudioVoiceValue(config.audioVoice), format, speed: normalizeAudioSpeedValue(config.audioSpeed), instructions: config.audioInstructions.trim() },
                 signal: options?.signal,
             });
