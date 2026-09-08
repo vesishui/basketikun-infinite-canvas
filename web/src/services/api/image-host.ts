@@ -1,6 +1,8 @@
 /**
  * 免费图床上传：把 base64 dataURL 图片上传到公网可访问的图床，返回 HTTPS URL。
- * 顺序：kingimage（国内直连，偶发 500，自动重试）→ litterbox（72h 短链）。
+ * 顺序：litterbox（72h 短链，偶发 500，自动重试）→ uguu → imgBB（key 上传通，但 i.ibb.co 直链
+ *       国内网络 SNI 阻断无法下载，仅作最后兜底）。
+ * kingimage 已移除：kxlove.top 证书 2026-08-30 过期，浏览器 fetch 直接拒连导致全链失败。
  * 注意：temp.sh 已移除 —— 实测土豆(ai-tudou)上游服务器无法从 temp.sh 下载图片，
  *       会导致视频任务报 502「视频参考图下载或落盘失败: context deadline exceeded」。
  * 全部走 canvas-agent relay 中转（浏览器直连图床会被 CORS 拦截）。
@@ -61,24 +63,8 @@ type HostConfig = {
     extractUrl: (response: unknown) => string | null;
 };
 
-/** 可用图床（temp.sh 已排除：土豆上游无法下载其图片） */
+/** 可用图床（kingimage 证书过期已移除；temp.sh 因土豆上游无法下载已移除） */
 const HOSTS: HostConfig[] = [
-    {
-        name: "kingimage",
-        url: "https://file.kxlove.top/api.php",
-        fileField: "file",
-        fields: { show: "0", ispwd: "0" },
-        extractUrl: (resp: unknown) => {
-            const obj = resp as Record<string, unknown> | null;
-            if (obj?.code !== 0 && obj?.code !== "0") return null;
-            const raw = obj?.downurl;
-            if (typeof raw !== "string" || !raw.startsWith("http")) return null;
-            // down.php 返回 application/force-download（attachment），上游服务器（如 yunfei/土豆）
-            // 按 Content-Type 判断会认为"不是图片"而报 images[0] is not an image。
-            // view.php 返回 image/*（inline），是可直接被当作图片的直链。
-            return raw.replace(/\/down\.php\//, "/view.php/");
-        },
-    },
     {
         name: "litterbox",
         url: "https://litterbox.catbox.moe/resources/internals/api.php",
@@ -88,6 +74,34 @@ const HOSTS: HostConfig[] = [
             const text = typeof resp === "string" ? resp : "";
             const url = text.split("\n")[0]?.trim() || "";
             return url.startsWith("http") ? url : null;
+        },
+    },
+    {
+        name: "uguu",
+        url: "https://uguu.se/upload?output=text",
+        fileField: "files[]",
+        fields: {},
+        extractUrl: (resp: unknown) => {
+            const text = typeof resp === "string" ? resp : "";
+            const url = text.split("\n")[0]?.trim() || "";
+            return url.startsWith("http") ? url : null;
+        },
+    },
+    {
+        // imgBB 上传 API 可用（key 已实测有效），但其直链域名 i.ibb.co 在国内网络被 SNI 阻断，
+        // 上游服务器大概率无法下载，仅作最后兜底。
+        name: "imgbb",
+        url: "https://api.imgbb.com/1/upload?key=af1acf9447ca882c7cfe7846201141ff",
+        fileField: "image",
+        fields: {},
+        extractUrl: (resp: unknown) => {
+            const obj = resp as { data?: { url?: unknown }; error?: { code?: number; message?: string } } | null;
+            if (obj?.error) {
+                console.warn(`[图床] imgbb 被拒: code=${obj.error.code} ${obj.error.message}`);
+                return null;
+            }
+            const url = obj?.data?.url;
+            return typeof url === "string" && url.startsWith("http") ? url : null;
         },
     },
 ];
@@ -120,8 +134,8 @@ export async function uploadImageToPublicUrl(dataUrl: string, signal?: AbortSign
 
     const errors: string[] = [];
     for (const host of HOSTS) {
-        // kingimage 偶发 500，重试一次再轮到 litterbox
-        const attempts = host.name === "kingimage" ? 2 : 1;
+        // 首选图床偶发 500，重试一次再轮到下一个
+        const attempts = host.name === HOSTS[0].name ? 2 : 1;
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             const t1 = performance.now();
             try {
