@@ -354,7 +354,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             if (!raw) return;
             const parsed = JSON.parse(raw);
             const sessions = Array.isArray(parsed) ? parsed : [];
-            if (sessions.length) canvasSessionsRef.current = sessions.filter((s) => s?.messages?.length && s.messages.some((m) => m.role === "user"));
+            if (sessions.length) canvasSessionsRef.current = sessions.filter((s) => s?.messages?.length && s.messages.some((m: { role: string }) => m.role === "user"));
             // 自动恢复当前渠道模型的最近会话
             const model = resolveCanvasChannelModel()?.model || "";
             const current = model
@@ -1821,13 +1821,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                         reasoningEffort={reasoningEffort}
                         onModelChange={(model) => {
                             const allModels = allAgentModels;
-                            const selected = allModels.find((item) => item.model === model);
+                            const selected = allModels.find((item) => item.model === model) as { defaultReasoningEffort?: string; supportedReasoningEfforts?: Array<{ reasoningEffort: string }> } | undefined;
                             if (!selected) return;
-                            const effort = selected.defaultReasoningEffort || selected.supportedReasoningEfforts[0]?.reasoningEffort;
+                            const effort = selected.defaultReasoningEffort || selected.supportedReasoningEfforts?.[0]?.reasoningEffort;
                             localStorage.setItem("canvas-agent-model", model);
                             if (effort) localStorage.setItem("canvas-agent-reasoning-effort", effort);
                             setCanvasChannelActive(Boolean(canvasChannelModel && model === canvasChannelModel.model));
-                            setAgentState({ model, ...(effort ? { reasoningEffort: effort } : {}) });
+                            setAgentState({ model, ...(effort ? { reasoningEffort: effort as never } : {}) });
                             // 切回 Codex 模型时恢复其线程历史（画布对话独立存储，不受影响）
                             if (!canvasChannelModel || model !== canvasChannelModel.model) void loadThreads();
                         }}

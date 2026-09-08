@@ -43,6 +43,7 @@ export type AiConfig = {
     vquality: string;
     videoGenerateAudio: string;
     videoWatermark: string;
+    videoMode: string;
     systemPrompt: string;
     reasoningEffort: ReasoningEffort;
     models: string[];
@@ -54,6 +55,11 @@ export type AiConfig = {
     /** 本地转发代理开关与地址:开启后浏览器请求先发本机代理再转发目标地址,规避 CORS */
     proxyEnabled: boolean;
     proxyUrl: string;
+};
+
+export type ChannelCredentialsImportResult = {
+    status: "created" | "updated" | "missing-base-url" | "invalid-base-url";
+    channelName?: string;
 };
 
 export type WebdavSyncConfig = {
@@ -69,6 +75,9 @@ export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+
+export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
+export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -103,6 +112,7 @@ export const defaultConfig: AiConfig = {
     vquality: "720",
     videoGenerateAudio: "true",
     videoWatermark: "false",
+    videoMode: "frames",
     systemPrompt: "",
     reasoningEffort: "auto",
     models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts"],
@@ -112,7 +122,7 @@ export const defaultConfig: AiConfig = {
     count: "1",
     canvasImageCount: "3",
     proxyEnabled: false,
-    proxyUrl: "http://127.0.0.1:23210",
+    proxyUrl: DEFAULT_LOCAL_PROXY_URL,
 };
 
 export const defaultWebdavSyncConfig: WebdavSyncConfig = {
@@ -131,6 +141,7 @@ type ConfigStore = {
     shouldPromptContinue: boolean;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     updateWebdavConfig: <K extends keyof WebdavSyncConfig>(key: K, value: WebdavSyncConfig[K]) => void;
+    importChannelCredentials: (input: { baseUrl?: string | null; apiKey?: string | null }) => ChannelCredentialsImportResult;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean, tab?: ConfigTabKey) => void;
     setConfigDialogOpen: (isOpen: boolean) => void;
@@ -216,6 +227,12 @@ export const useConfigStore = create<ConfigStore>()(
                         [key]: value,
                     },
                 })),
+            importChannelCredentials: (input) => {
+                const currentConfig = get().config;
+                const result = upsertChannelCredentials(currentConfig, input);
+                if (result.config !== currentConfig) set({ config: result.config });
+                return { status: result.status, channelName: result.channelName };
+            },
             isAiConfigReady: (config, model) => isAiConfigReady(config, model),
             openConfigDialog: (shouldPromptContinue = false, configTab = "channels") => set({ isConfigOpen: true, shouldPromptContinue, configTab }),
             setConfigDialogOpen: (isConfigOpen) => set({ isConfigOpen }),
@@ -254,15 +271,80 @@ export const useConfigStore = create<ConfigStore>()(
                         vquality: config.vquality || "720",
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
+                        videoMode: config.videoMode === "reference" ? "reference" : "frames",
                         canvasImageCount: config.canvasImageCount || "3",
                         proxyEnabled: Boolean(config.proxyEnabled),
-                        proxyUrl: normalizeLocalProxyUrl(config.proxyUrl || defaultConfig.proxyUrl),
+                        proxyUrl: config.proxyUrl || DEFAULT_LOCAL_PROXY_URL,
                     },
                 };
             },
         },
     ),
 );
+
+export function upsertChannelCredentials(
+    config: AiConfig,
+    input: { baseUrl?: string | null; apiKey?: string | null },
+): ChannelCredentialsImportResult & { config: AiConfig } {
+    const rawBaseUrl = input.baseUrl?.trim() || "";
+    if (!rawBaseUrl) return { status: "missing-base-url", config };
+    if (!isHttpBaseUrl(rawBaseUrl)) return { status: "invalid-base-url", config };
+
+    const baseUrl = normalizeImportedBaseUrl(rawBaseUrl);
+    const apiKey = input.apiKey?.trim() || "";
+    const matchingIndex = config.channels.findIndex((channel) => normalizedBaseUrlKey(channel.baseUrl) === normalizedBaseUrlKey(baseUrl));
+
+    if (matchingIndex >= 0) {
+        const existing = config.channels[matchingIndex];
+        if (existing.baseUrl === baseUrl && (!apiKey || existing.apiKey === apiKey)) {
+            return { status: "updated", channelName: existing.name, config };
+        }
+        const updated = { ...existing, baseUrl, ...(apiKey ? { apiKey } : {}) };
+        const channels = config.channels.map((channel, index) => (index === matchingIndex ? updated : channel));
+        return { status: "updated", channelName: existing.name, config: { ...config, channels } };
+    }
+
+    const channel = createModelChannel({
+        name: importedChannelName(baseUrl),
+        baseUrl,
+        apiKey,
+        apiFormat: "openai",
+        models: [],
+    });
+    return { status: "created", channelName: channel.name, config: { ...config, channels: [...config.channels, channel] } };
+}
+
+function isHttpBaseUrl(baseUrl: string) {
+    try {
+        const url = new URL(baseUrl);
+        return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+    } catch {
+        return false;
+    }
+}
+
+function normalizedBaseUrlKey(baseUrl: string) {
+    try {
+        return stripTrailingApiVersion(normalizeImportedBaseUrl(baseUrl));
+    } catch {
+        return stripTrailingApiVersion(baseUrl.trim().replace(/\/+$/, ""));
+    }
+}
+
+function normalizeImportedBaseUrl(baseUrl: string) {
+    const url = new URL(baseUrl.trim());
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+}
+
+function stripTrailingApiVersion(baseUrl: string) {
+    return baseUrl.replace(/\/v1$/i, "");
+}
+
+function importedChannelName(baseUrl: string) {
+    const hostname = new URL(baseUrl).hostname;
+    return hostname.replace(/^(?:www|api)\./i, "") || i18n.t("config.channels.newName");
+}
 
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
@@ -397,7 +479,7 @@ export function buildApiUrl(baseUrl: string, path: string) {
     const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
     const apiBaseUrl = lowerBaseUrl.endsWith("/v1") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
-    return `${apiBaseUrl}${path}`;
+    return withLocalProxy(`${apiBaseUrl}${path}`);
 }
 
 export function normalizeLocalProxyUrl(value: string) {

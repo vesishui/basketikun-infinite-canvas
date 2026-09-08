@@ -2,12 +2,12 @@ import localforage from "localforage";
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
-import { readImageMeta } from "@/lib/image-utils";
+import { isLocalProxyEnabled, withLocalProxy } from "@/stores/use-config-store";
 import { relayOpenAiRequest } from "./api/relay";
 
 export type UploadedImage = {
     url: string;
-    storageKey: string;
+    storageKey?: string;
     width: number;
     height: number;
     bytes: number;
@@ -18,42 +18,125 @@ const store = localforage.createInstance({ name: "infinite-canvas", storeName: "
 const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
 const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
 const objectUrls = new Map<string, string>();
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+const IMAGE_REMOTE_LOAD_TIMEOUT_MS = 10 * 60_000;
+const IMAGE_DECODE_TIMEOUT_MS = 10_000;
+const IMAGE_RESPONSE_ERROR = "ImageResponseError";
+const IMAGE_TIMEOUT_ERROR = "ImageTimeoutError";
 
-/** 远程图片 URL 优先走 canvas-agent 中继下载，避免浏览器直连第三方被 CORS 拦截；失败时回退浏览器直连。 */
-async function fetchRemoteBlob(url: string): Promise<Blob> {
-    // data URL 或 blob URL → 直接 fetch 转 Blob（不走 relay，agent 无法处理 data: 和 blob: 协议）
-    if (url.startsWith("data:") || url.startsWith("blob:")) {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(i18n.t("common.imageReadFailed"));
-        return response.blob();
-    }
+type ImageReadOptions = { signal?: AbortSignal };
+
+export async function uploadImage(input: string | Blob, options?: ImageReadOptions): Promise<UploadedImage> {
+    if (typeof input !== "string") return storeImage(input, options);
+
+    let blob: Blob;
     try {
-        return (await relayOpenAiRequest({ baseUrl: "", apiKey: "", method: "GET", path: url, kind: "blob" })) as Blob;
-    } catch {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(i18n.t("common.imageReadFailed"));
-        return await response.blob();
+        blob = await fetchImageBlob(input, options);
+    } catch (error) {
+        if (options?.signal?.aborted || isNamedError(error, IMAGE_RESPONSE_ERROR) || isNamedError(error, IMAGE_TIMEOUT_ERROR) || !/^https?:\/\//i.test(input)) throw error;
+        const meta = await loadImageMeta(input, options, IMAGE_REMOTE_LOAD_TIMEOUT_MS);
+        if (!meta) throw error;
+        return { url: input, width: meta.width, height: meta.height, bytes: 0, mimeType: "" };
+    }
+    return storeImage(blob, options);
+}
+
+async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<UploadedImage> {
+    const storageKey = `image:${nanoid()}`;
+    const url = URL.createObjectURL(blob);
+    try {
+        const meta = await loadImageMeta(url, options);
+        if (!meta) throw new Error(i18n.t("common.imageReadFailed"));
+        throwIfAborted(options?.signal);
+        await store.setItem(storageKey, blob);
+        throwIfAborted(options?.signal);
+        objectUrls.set(storageKey, url);
+        return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type.startsWith("image/") ? blob.type : "" };
+    } catch (error) {
+        URL.revokeObjectURL(url);
+        await store.removeItem(storageKey).catch(() => undefined);
+        throw error;
     }
 }
 
-export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    let blob: Blob;
-    if (input instanceof Blob) {
-        blob = input;
-    } else if (input.startsWith("data:")) {
-        // data URL（如 canvas.toDataURL 产物）→ 浏览器直接 fetch 转 Blob，
-        // 不走 relay（agent 无法处理 data: 协议，会挂起导致切分图片等功能卡死）
-        blob = await fetch(input).then((res) => res.blob());
-    } else {
-        // HTTP/HTTPS URL → 走 relay 中继下载（避免浏览器 CORS 拦截）
-        blob = await fetchRemoteBlob(input);
+/** 远程图片优先走 canvas-agent 中继下载（本地网络对部分图片域 SNI 阻断），失败回退浏览器直连（代理开启时经本机代理转发）。 */
+async function fetchImageBlob(url: string, options?: ImageReadOptions) {
+    if (/^https?:\/\//i.test(url) && !isLocalProxyEnabled()) {
+        try {
+            return (await relayOpenAiRequest({ baseUrl: "", apiKey: "", method: "GET", path: url, kind: "blob", signal: options?.signal })) as Blob;
+        } catch (error) {
+            if (options?.signal?.aborted) throw error;
+        }
     }
-    const storageKey = `image:${nanoid()}`;
-    await store.setItem(storageKey, blob);
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    const meta = await readImageMeta(url);
-    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
+    const controller = new AbortController();
+    let timedOut = false;
+    const abort = () => controller.abort();
+    if (options?.signal?.aborted) abort();
+    else options?.signal?.addEventListener("abort", abort, { once: true });
+    const timer = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, IMAGE_DOWNLOAD_TIMEOUT_MS);
+    try {
+        const response = await fetch(withLocalProxy(url), { signal: controller.signal });
+        if (!response.ok) throw namedError(IMAGE_RESPONSE_ERROR);
+        return await response.blob();
+    } catch (error) {
+        if (timedOut) throw namedError(IMAGE_TIMEOUT_ERROR);
+        if (options?.signal?.aborted) throw abortReason(options.signal);
+        throw error;
+    } finally {
+        window.clearTimeout(timer);
+        options?.signal?.removeEventListener("abort", abort);
+    }
+}
+
+function loadImageMeta(url: string, options?: ImageReadOptions, timeoutMs = IMAGE_DECODE_TIMEOUT_MS) {
+    return new Promise<{ width: number; height: number } | null>((resolve, reject) => {
+        if (options?.signal?.aborted) return reject(abortReason(options.signal));
+        const image = new Image();
+        let settled = false;
+        const finish = (value: { width: number; height: number } | null) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            options?.signal?.removeEventListener("abort", abort);
+            image.onload = null;
+            image.onerror = null;
+            resolve(value);
+        };
+        const abort = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            image.onload = null;
+            image.onerror = null;
+            reject(abortReason(options!.signal!));
+        };
+        const timer = window.setTimeout(() => finish(null), timeoutMs);
+        options?.signal?.addEventListener("abort", abort, { once: true });
+        image.onload = () => finish(image.naturalWidth && image.naturalHeight ? { width: image.naturalWidth, height: image.naturalHeight } : null);
+        image.onerror = () => finish(null);
+        image.src = url;
+    });
+}
+
+function namedError(name: string) {
+    const error = new Error(i18n.t("common.imageReadFailed"));
+    error.name = name;
+    return error;
+}
+
+function isNamedError(error: unknown, name: string) {
+    return error instanceof Error && error.name === name;
+}
+
+function abortReason(signal: AbortSignal) {
+    return signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+    if (signal?.aborted) throw abortReason(signal);
 }
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
@@ -78,11 +161,10 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
     return url;
 }
 
-export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
+export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }, options?: ImageReadOptions) {
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url || url.startsWith("data:")) return url;
-    // 远程 URL 走中继下载（避免第三方图片域无 CORS 头导致浏览器拦截）
-    return blobToDataUrl(await fetchRemoteBlob(url));
+    return blobToDataUrl(await fetchImageBlob(url, options));
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {

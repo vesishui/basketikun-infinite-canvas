@@ -1,8 +1,8 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
 
+import { isLocalProxyEnabled, withLocalProxy } from "@/stores/use-config-store";
 import { relayOpenAiRequest } from "./api/relay";
-
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
@@ -20,8 +20,7 @@ async function fetchRemoteMediaBlob(url: string): Promise<Blob> {
 }
 
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
-    const blob = typeof input === "string" ? await fetchRemoteMediaBlob(input) : input;
-    const storageKey = `${prefix}:${nanoid()}`;
+    const blob = typeof input === "string" ? await fetchRemoteMediaBlob(input) : input;    const storageKey = `${prefix}:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);

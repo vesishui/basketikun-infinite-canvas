@@ -3,7 +3,7 @@ import axios from "axios";
 import i18n from "@/i18n";
 import { audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -32,12 +32,13 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
         try {
             // 参考音频（音色克隆）：传入脚本的 audios 数组，脚本用参考音频 + generate_voice_clone 克隆音色生成
             const refs = (options?.references || []).map((ref) => ref.dataUrl || ref.url || "").filter(Boolean);
+            const audioFiles = await Promise.all(refs.map(async (dataUrl, i) => new File([await (await fetch(dataUrl)).blob()], `ref${i}.mp3`, { type: "audio/mpeg" })));
             const result = await runModelPlugin({
                 capability: "audio",
                 script,
                 config: requestConfig,
                 prompt,
-                audios: refs,
+                audios: audioFiles,
                 params: { voice: normalizeAudioVoiceValue(config.audioVoice), format, speed: normalizeAudioSpeedValue(config.audioSpeed), instructions: config.audioInstructions.trim() },
                 signal: options?.signal,
             });
@@ -79,7 +80,7 @@ async function audioPluginBlob(result: unknown, format: string): Promise<Blob> {
     }
     if (!source) throw new Error(apiText("scriptNoAudio"));
     const url = source.startsWith("data:") || /^https?:/i.test(source) ? source : `data:${audioMimeType(format)};base64,${source}`;
-    const blob = await (await fetch(url)).blob();
+    const blob = await (await fetch(withLocalProxy(url))).blob();
     return blob.type.startsWith("audio/") ? blob : new Blob([blob], { type: audioMimeType(format) });
 }
 
