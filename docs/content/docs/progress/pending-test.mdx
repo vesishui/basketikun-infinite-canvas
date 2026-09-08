@@ -8,6 +8,7 @@ description: Implemented changes that still need manual verification
 The current release needs manual verification in these areas:
 
 - 视频秒数上限：视频设置面板新增 30s 选项且数字输入上限为 30；画布节点选择 30 秒后,脚本收到的 params.seconds 应为 "30" 并原样到达上游,不再被钳制成 20。
+- 本地转发代理：配置弹窗新增「本地代理」页签，开启开关、终端运行 `node canvas-proxy/index.js`（或 `npx @basketikun/canvas-proxy@latest`）并点击「测试连接」应提示连接正常。开启后调用脚本的 http/request、图床上传（litterbox→uguu→imgBB 链不变）改为浏览器直传并经本机代理转发，跨域不再依赖 canvas-agent；关闭开关即恢复走 canvas-agent 中继。画布默认不开代理时所有行为应与之前一致。
 - 免费图床上传链：上传参考图时应优先走 litterbox 并在失败后自动重试一次，再依次回落 uguu、imgBB；kingimage（证书已过期）不再出现在上传日志中。含参考图的视频任务应能正常创建，上游服务器应能从返回的公网直链下载图片。
 - Canvas Agent generation-flow references: when a generation prompt contains only `@[node:...]` references already passed through `referenceNodeIds`, the existing text, image, video, audio, or group nodes should connect directly to the generated config node without creating a duplicate prompt text node; prompts containing ordinary prose should continue creating their own prompt text node.
 - Video frame capture: right-clicking a video node with content should show Capture first frame, Capture last frame, and Capture current frame. Each action should create and select a proportional image node to the right, connect the video to the image, use the player's visible position for the current frame, and leave the original playback position unchanged.

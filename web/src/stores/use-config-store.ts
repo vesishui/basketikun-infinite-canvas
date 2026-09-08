@@ -51,6 +51,9 @@ export type AiConfig = {
     background: string;
     count: string;
     canvasImageCount: string;
+    /** 本地转发代理开关与地址:开启后浏览器请求先发本机代理再转发目标地址,规避 CORS */
+    proxyEnabled: boolean;
+    proxyUrl: string;
 };
 
 export type WebdavSyncConfig = {
@@ -60,7 +63,7 @@ export type WebdavSyncConfig = {
     directory: string;
     lastSyncedAt: string;
 };
-export type ConfigTabKey = "channels" | "preferences" | "prompt-sources" | "webdav" | "local-storage";
+export type ConfigTabKey = "channels" | "local-proxy" | "preferences" | "prompt-sources" | "webdav" | "local-storage";
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
@@ -108,6 +111,8 @@ export const defaultConfig: AiConfig = {
     background: "",
     count: "1",
     canvasImageCount: "3",
+    proxyEnabled: false,
+    proxyUrl: "http://127.0.0.1:23210",
 };
 
 export const defaultWebdavSyncConfig: WebdavSyncConfig = {
@@ -250,6 +255,8 @@ export const useConfigStore = create<ConfigStore>()(
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
                         canvasImageCount: config.canvasImageCount || "3",
+                        proxyEnabled: Boolean(config.proxyEnabled),
+                        proxyUrl: normalizeLocalProxyUrl(config.proxyUrl || defaultConfig.proxyUrl),
                     },
                 };
             },
@@ -391,4 +398,24 @@ export function buildApiUrl(baseUrl: string, path: string) {
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
     const apiBaseUrl = lowerBaseUrl.endsWith("/v1") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
+}
+
+export function normalizeLocalProxyUrl(value: string) {
+    const trimmed = (value || "").trim().replace(/\/+$/, "");
+    if (!trimmed) return "";
+    return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+}
+
+/** 本地转发代理开启时,把外发请求包上代理前缀,浏览器直连不再被 CORS 拦截;未开启或非 http(s) 原样返回。 */
+export function withLocalProxy(url: string) {
+    const { proxyEnabled, proxyUrl } = useConfigStore.getState().config;
+    if (!proxyEnabled || !/^https?:\/\//i.test(url)) return url;
+    const base = normalizeLocalProxyUrl(proxyUrl);
+    if (!base || url.startsWith(`${base}/`)) return url;
+    return `${base}/${url}`;
+}
+
+/** 本地代理是否开启(调用方据此选择直传或走 canvas-agent 中继)。 */
+export function isLocalProxyEnabled() {
+    return useConfigStore.getState().config.proxyEnabled;
 }

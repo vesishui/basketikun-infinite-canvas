@@ -5,9 +5,11 @@
  * kingimage 已移除：kxlove.top 证书 2026-08-30 过期，浏览器 fetch 直接拒连导致全链失败。
  * 注意：temp.sh 已移除 —— 实测土豆(ai-tudou)上游服务器无法从 temp.sh 下载图片，
  *       会导致视频任务报 502「视频参考图下载或落盘失败: context deadline exceeded」。
- * 全部走 canvas-agent relay 中转（浏览器直连图床会被 CORS 拦截）。
+ * 全部走 canvas-agent relay 中转（浏览器直连图床会被 CORS 拦截）；
+ * 配置里开启「本地代理」后改走浏览器直传（浏览器 → 本地 canvas-proxy → 图床，代理补 CORS 头）。
  * 参考：Python 版 Infinite-Canvas main.py 的 upload_local_video_to_cloud 实现。
  */
+import { isLocalProxyEnabled, withLocalProxy } from "@/stores/use-config-store";
 import { relayOpenAiRequest } from "./relay";
 
 /** 图床上传 URL 缓存（hash → 公网 URL）：同内容图片不再重复上传，图生图/视频/音频脚本通用。 */
@@ -43,9 +45,13 @@ async function dataUrlHash(dataUrl: string): Promise<string> {
     }
 }
 
-/** 用 HEAD 经 canvas-agent relay 验证公网 URL 仍可访问（浏览器直连图床会被 CORS 拦）。 */
+/** 用 HEAD 经 canvas-agent relay 验证公网 URL 仍可访问（本地代理开启时改走浏览器直连）。 */
 async function isPublicUrlAlive(url: string, signal?: AbortSignal): Promise<boolean> {
     try {
+        if (isLocalProxyEnabled()) {
+            const response = await fetch(withLocalProxy(url), { method: "HEAD", cache: "no-store", signal });
+            return response.ok;
+        }
         await relayOpenAiRequest({ baseUrl: "", apiKey: "", method: "HEAD", path: url, kind: "json", signal });
         return true;
     } catch {
@@ -106,6 +112,26 @@ const HOSTS: HostConfig[] = [
     },
 ];
 
+/** 本地代理开启时的浏览器直传：FormData 原样发给本机代理转发,返回上游原始响应。 */
+async function uploadViaLocalProxy(host: HostConfig, dataUrl: string, signal?: AbortSignal): Promise<unknown> {
+    const blob = await (await fetch(dataUrl)).blob();
+    const form = new FormData();
+    Object.entries(host.fields).forEach(([key, value]) => form.set(key, value));
+    form.set(host.fileField, blob, "image.png");
+    const response = await fetch(withLocalProxy(host.url), { method: "POST", body: form, signal });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 300)}`);
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+        try {
+            return JSON.parse(text);
+        } catch {
+            return text;
+        }
+    }
+    return text;
+}
+
 /**
  * 把 dataURL 图片上传到免费图床，返回公网 HTTPS URL。
  * @param dataUrl base64 dataURL 或 http(s) URL（已经是公网 URL 则原样返回）
@@ -139,20 +165,20 @@ export async function uploadImageToPublicUrl(dataUrl: string, signal?: AbortSign
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             const t1 = performance.now();
             try {
-                const response = await relayOpenAiRequest({
-                    baseUrl: "",
-                    apiKey: "",
-                    method: "POST",
-                    path: host.url,
-                    kind: "form",
-                    body: {
-                        fields: host.fields,
-                        files: [
-                            { name: host.fileField, filename: "image.png", dataUrl },
-                        ],
-                    },
-                    signal,
-                });
+                const response = isLocalProxyEnabled()
+                    ? await uploadViaLocalProxy(host, dataUrl, signal)
+                    : await relayOpenAiRequest({
+                          baseUrl: "",
+                          apiKey: "",
+                          method: "POST",
+                          path: host.url,
+                          kind: "form",
+                          body: {
+                              fields: host.fields,
+                              files: [{ name: host.fileField, filename: "image.png", dataUrl }],
+                          },
+                          signal,
+                      });
                 const url = host.extractUrl(response);
                 if (url) {
                     console.log(`[图床] 上传成功 ${host.name} → ${url} 尝试${attempt + 1} (${Math.round(performance.now() - t1)}ms)`);

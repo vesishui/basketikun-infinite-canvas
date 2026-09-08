@@ -1,7 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { buildApiUrl, isLocalProxyEnabled, withLocalProxy, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { uploadImageToPublicUrl } from "./image-host";
 import { relayOpenAiRequest } from "./relay";
 
@@ -63,13 +63,48 @@ async function pluginFormDataToRelayBody(form: FormData) {
 }
 
 /**
+ * 本地代理开启时的直连请求：浏览器 → 本地 canvas-proxy → 目标地址（代理补 CORS 头，无跨域限制）。
+ * FormData/blob 原样收发，响应结构与 relay 路径一致（json 返回上游原始 body，blob 返回 Blob）。
+ */
+async function pluginProxyRequest(
+    config: AiConfig,
+    options: { method: string; path: string; data?: unknown; params?: Record<string, unknown>; headers?: Record<string, string>; responseType?: "json" | "blob" | "text" | "arraybuffer"; signal?: AbortSignal },
+) {
+    let target = pluginUrl(config, options.path);
+    if (options.params && Object.keys(options.params).length) {
+        const url = new URL(target);
+        Object.entries(options.params).forEach(([key, value]) => { if (value !== undefined && value !== null) url.searchParams.set(key, String(value)); });
+        target = url.toString();
+    }
+    const isForm = typeof FormData !== "undefined" && options.data instanceof FormData;
+    const headers: Record<string, string> = { ...(options.headers || {}) };
+    if (!isForm && options.data !== undefined && !headers["content-type"]) headers["content-type"] = "application/json";
+    const response = await axios.request({
+        method: options.method,
+        url: withLocalProxy(target),
+        data: options.responseType === "blob" ? undefined : options.data,
+        headers,
+        responseType: options.responseType || "json",
+        signal: options.signal,
+        validateStatus: () => true,
+    });
+    if (response.status >= 400) {
+        const raw = typeof response.data === "string" ? response.data : JSON.stringify(response.data?.error || response.data) || "";
+        throw new Error(raw.slice(0, 500) || `请求失败 (HTTP ${response.status})`);
+    }
+    return response.data;
+}
+
+/**
  * 插件脚本的请求统一走 canvas-agent 中继，避免浏览器直连第三方被 CORS 拦截。
+ * 本地代理开启时改走浏览器直传（浏览器 → 本地 canvas-proxy → 目标）。
  * 支持 JSON / FormData / blob 下载；未连 agent 时由 relayOpenAiRequest 回退浏览器直连。
  */
 async function pluginRelayRequest(
     config: AiConfig,
     options: { method: string; path: string; data?: unknown; params?: Record<string, unknown>; headers?: Record<string, string>; responseType?: "json" | "blob" | "text" | "arraybuffer"; signal?: AbortSignal },
 ) {
+    if (isLocalProxyEnabled()) return pluginProxyRequest(config, options);
     let target = pluginUrl(config, options.path);
     if (options.params && Object.keys(options.params).length) {
         const url = new URL(target);

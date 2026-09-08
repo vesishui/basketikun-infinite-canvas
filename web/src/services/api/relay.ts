@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import { useAgentStore } from "@/stores/use-agent-store";
-import { buildApiUrl } from "@/stores/use-config-store";
+import { buildApiUrl, withLocalProxy } from "@/stores/use-config-store";
 
 export type RelayKind = "json" | "form" | "blob";
 
@@ -63,8 +63,8 @@ export async function relayOpenAiRequest(options: RelayOpenAiOptions): Promise<u
             return data;
         }
     }
-    // 直连回退（无 agent 时，可能被 CORS 拦截）
-    const target = /^https?:\/\//i.test(options.path) ? options.path : buildApiUrl(options.baseUrl, options.path);
+    // 直连回退（无 agent 时）：本地代理开启则经代理转发规避 CORS，否则可能被 CORS 拦截
+    const target = withLocalProxy(/^https?:\/\//i.test(options.path) ? options.path : buildApiUrl(options.baseUrl, options.path));
     const headers: Record<string, string> = { ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}), ...(options.headers || {}) };
     if (options.kind !== "form" && !headers["content-type"]) headers["content-type"] = "application/json";
     const response = await axios.request({
