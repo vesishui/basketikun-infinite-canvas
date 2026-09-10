@@ -238,7 +238,7 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
             poll,
             (ms: number) => sleep(ms, args.signal),
             args.signal,
-            args.onDelta,
+            args.onDelta || (() => {}),
             (dataUrlOrUrl: string) => uploadImageToPublicUrl(dataUrlOrUrl, args.signal),
         );
     } catch (error) {

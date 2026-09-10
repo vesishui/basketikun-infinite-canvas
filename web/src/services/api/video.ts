@@ -50,7 +50,8 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
 export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
     for (let attempt = 0; attempt < 120; attempt += 1) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        options?.onProgress?.(`${Math.min(99, Math.round(((attempt + 1) * 100) / 120))}%`);
+        // 插件脚本自行通过 onDelta 上报进度;内置轮询按耗时估算,统一「进度:N%」格式供节点进度条解析
+        if (task.provider !== "plugin") options?.onProgress?.(`进度:${Math.min(99, Math.round(((attempt + 1) * 100) / 120))}%`);
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
         if (state.status === "failed") throw videoTaskFailed(state.error);

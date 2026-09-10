@@ -224,7 +224,8 @@ export const CanvasNode = React.memo(function CanvasNode({
             const dx = (event.clientX - resizeRef.current.startX) / scale;
             const dy = (event.clientY - resizeRef.current.startY) / scale;
             const minWidth = 220;
-            const minHeight = 160;
+            // 音频节点默认高 120,低于通用下限 160;用独立下限避免一碰缩放手柄就被强制拉高
+            const minHeight = data.type === CanvasNodeType.Audio ? 96 : 160;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
             const startBottom = resizeRef.current.startTop + resizeRef.current.startHeight;
             const fromLeft = resizeRef.current.corner.includes("left");
@@ -358,9 +359,9 @@ export const CanvasNode = React.memo(function CanvasNode({
             <div
                 className="relative h-full w-full overflow-visible rounded-3xl border-2"
                 style={{
-                    background: isGroup ? "transparent" : hasImageContent || hasVideoContent || transparentBg ? "transparent" : theme.node.fill,
-                    borderColor: isGroup ? (isGroupDropTarget || isActive ? selectionBlue : theme.node.stroke) : hasImageContent ? imageBorderColor : isActive ? selectionBlue : isRelated ? theme.node.muted : transparentBg ? "transparent" : theme.node.stroke,
-                    borderStyle: isGroup ? "dashed" : "solid",
+                    background: isGroup ? (data.metadata?.groupColor ? `${data.metadata.groupColor}26` : "transparent") : hasImageContent || hasVideoContent || transparentBg ? "transparent" : theme.node.fill,
+                    borderColor: isGroup ? (isGroupDropTarget || isActive ? selectionBlue : data.metadata?.groupColor || theme.node.stroke) : hasImageContent ? imageBorderColor : isActive ? selectionBlue : isRelated ? theme.node.muted : transparentBg ? "transparent" : theme.node.stroke,
+                    borderStyle: isGroup ? (data.metadata?.groupColor ? "solid" : "dashed") : "solid",
                     boxShadow: isGroupDropTarget ? `0 0 0 2px ${selectionBlue}66, inset 0 0 0 999px ${selectionBlue}10` : isActive ? `0 0 0 1px ${selectionBlue}55` : isRelated ? `0 0 0 1px ${theme.node.muted}55, 0 18px 48px rgba(0,0,0,.14)` : undefined,
                 }}
                 onMouseDown={(event) => {

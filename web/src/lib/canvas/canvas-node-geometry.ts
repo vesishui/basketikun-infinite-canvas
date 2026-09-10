@@ -12,6 +12,45 @@ export function nodeBounds(nodes: CanvasNodeData[]) {
     );
 }
 
+export type NodeArrangeMode = "grid" | "vertical" | "horizontal";
+
+const ARRANGE_GAP = 16;
+
+// 按宫格 / 垂直 / 水平重排节点位置（保持各节点自身尺寸），返回更新过 position 的新节点数组。
+export function arrangeNodes(nodes: CanvasNodeData[], mode: NodeArrangeMode): CanvasNodeData[] {
+    if (nodes.length < 2) return nodes;
+    const sorted = [...nodes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
+    const bounds = nodeBounds(sorted);
+    if (mode === "vertical") {
+        const centerX = bounds.left + (bounds.right - bounds.left) / 2;
+        let cursorY = bounds.top;
+        return sorted.map((node) => {
+            const next = { ...node, position: { x: centerX - node.width / 2, y: cursorY } };
+            cursorY += node.height + ARRANGE_GAP;
+            return next;
+        });
+    }
+    if (mode === "horizontal") {
+        const centerY = bounds.top + (bounds.bottom - bounds.top) / 2;
+        let cursorX = bounds.left;
+        return sorted.map((node) => {
+            const next = { ...node, position: { x: cursorX, y: centerY - node.height / 2 } };
+            cursorX += node.width + ARRANGE_GAP;
+            return next;
+        });
+    }
+    // grid: 按节点数取列数（列多行少），从左到右、从上到下排布。
+    const cols = Math.max(1, Math.ceil(Math.sqrt(sorted.length)));
+    const cellW = (bounds.right - bounds.left) / cols;
+    const rows = Math.ceil(sorted.length / cols);
+    const cellH = (bounds.bottom - bounds.top) / rows;
+    return sorted.map((node, index) => {
+        const col = index % cols;
+        const row = Math.floor(index / cols);
+        return { ...node, position: { x: bounds.left + col * cellW + (cellW - node.width) / 2, y: bounds.top + row * cellH + (cellH - node.height) / 2 } };
+    });
+}
+
 export function findGroupDropTarget(movedIds: Set<string>, nodes: CanvasNodeData[]) {
     if (nodes.some((node) => movedIds.has(node.id) && node.type === CanvasNodeType.Group)) return null;
     const movingNodes = nodes.filter((node) => movedIds.has(node.id) && node.type !== CanvasNodeType.Group);

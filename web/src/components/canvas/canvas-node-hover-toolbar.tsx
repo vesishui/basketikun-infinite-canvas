@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
-import { Download, Ellipsis, Eraser, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Plus, RefreshCw, Settings2, Trash2, Ungroup, Upload, Video } from "lucide-react";import { useTranslation } from "react-i18next";
+import { AlignHorizontalJustifyCenter, AlignVerticalJustifyCenter, Download, Ellipsis, Eraser, FolderPlus, Grid2x2, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Plus, RefreshCw, Settings2, Trash2, Ungroup, Upload, Video } from "lucide-react";import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -9,6 +9,7 @@ import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 import type { CanvasNodeToolbarItem } from "@/types/canvas-plugin";
+import type { NodeArrangeMode } from "@/lib/canvas/canvas-node-geometry";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
 
@@ -38,6 +39,8 @@ type CanvasNodeHoverToolbarProps = {
     onDelete: (node: CanvasNodeData) => void;
     onUngroup?: (node: CanvasNodeData) => void;
     onClearContent?: (node: CanvasNodeData) => void;
+    onArrange?: (node: CanvasNodeData, mode: NodeArrangeMode) => void;
+    onGroupColor?: (node: CanvasNodeData, color: string) => void;
     extraTools?: CanvasNodeToolbarItem[];
 };
 
@@ -77,6 +80,8 @@ export function CanvasNodeHoverToolbar({
     onDelete,
     onUngroup,
     onClearContent,
+    onArrange,
+    onGroupColor,
     extraTools = [],
 }: CanvasNodeHoverToolbarProps) {
     const [quickImageToolIds, setQuickImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
@@ -84,6 +89,8 @@ export function CanvasNodeHoverToolbar({
     const [draftImageToolIds, setDraftImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [draftShowImageToolLabels, setDraftShowImageToolLabels] = useState(false);
     const [imageToolSettingsOpen, setImageToolSettingsOpen] = useState(false);
+    const [groupMenuOpen, setGroupMenuOpen] = useState<"color" | "arrange" | null>(null);
+    const toolbarRef = useRef<HTMLDivElement | null>(null);
     const { message } = App.useApp();
     const { t } = useTranslation();
     const copyText = useCopyText();
@@ -103,7 +110,20 @@ export function CanvasNodeHoverToolbar({
 
     useEffect(() => {
         setImageToolSettingsOpen(false);
+        setGroupMenuOpen(null);
     }, [node?.id]);
+
+    // 组菜单打开期间常驻:鼠标移开不关闭,点击菜单/按钮以外区域(含其他工具按钮)或切换节点时才收起
+    useEffect(() => {
+        if (!groupMenuOpen) return;
+        const handlePointerDown = (event: PointerEvent) => {
+            const target = event.target as Element | null;
+            if (target?.closest?.("[data-group-menu]") && toolbarRef.current?.contains(target)) return;
+            setGroupMenuOpen(null);
+        };
+        window.addEventListener("pointerdown", handlePointerDown, true);
+        return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+    }, [groupMenuOpen]);
 
     if (!node) return null;
 
@@ -188,15 +208,22 @@ export function CanvasNodeHoverToolbar({
     return (
         <>
             <div
+                ref={toolbarRef}
                 className="absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
                 style={{ left, top }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
-                    if (!imageToolSettingsOpen) onLeave();
+                    if (!imageToolSettingsOpen && !groupMenuOpen) onLeave();
                 }}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
             >
+                {node.type === CanvasNodeType.Group && onGroupColor && onArrange ? (
+                    <>
+                        <GroupColorTool node={node} open={groupMenuOpen === "color"} onOpenChange={(next) => setGroupMenuOpen(next ? "color" : null)} onSelect={(color) => onGroupColor(node, color)} />
+                        <GroupArrangeTool node={node} open={groupMenuOpen === "arrange"} onOpenChange={(next) => setGroupMenuOpen(next ? "arrange" : null)} onSelect={(mode) => onArrange(node, mode)} />
+                    </>
+                ) : null}
                 {toolbarTools.map((tool) => (
                     <ToolbarAction key={tool.id} {...tool} showLabel={isImage ? showImageToolLabels : true} />
                 ))}
@@ -301,6 +328,105 @@ function ToolbarAction({ title, label, icon, onClick, showLabel, active = false,
                 </span>
             </button>
         </Tooltip>
+    );
+}
+
+const GROUP_COLORS = [
+    "#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4",
+    "#3b82f6", "#8b5cf6", "#ec4899", "#14b8a6", "#64748b",
+];
+
+function GroupColorTool({ node, open, onOpenChange, onSelect }: { node: CanvasNodeData; open: boolean; onOpenChange: (next: boolean) => void; onSelect: (color: string) => void }) {
+    const { t } = useTranslation();
+    const current = node.metadata?.groupColor;
+    return (
+        <div className="relative" data-group-menu>
+            {/* Tooltip 只挂在图标按钮上,菜单打开时禁用,避免提示遮住色板 */}
+            <Tooltip title={t("canvas.nodeToolbar.groupColorTitle")} placement="top" mouseEnterDelay={0.2} open={open ? false : undefined} color="#ffffff" styles={{ root: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
+                <button type="button" className="group relative flex h-12 items-center px-1.5" onClick={() => onOpenChange(!open)} aria-label={t("canvas.nodeToolbar.groupColorTitle")} aria-expanded={open}>
+                    <span className={`flex h-9 items-center justify-center rounded-lg px-1.5 transition group-hover:bg-[#f0f0f1] ${open ? "bg-[#eeeeef]" : ""}`}>
+                        <span
+                            className="block size-5 rounded-full border-2"
+                            style={{
+                                background: current ? `${current}4d` : "transparent",
+                                borderColor: current || "#a1a1aa",
+                            }}
+                        />
+                    </span>
+                </button>
+            </Tooltip>
+            {open ? (
+                <div
+                    className="absolute bottom-full left-0 z-[80] mb-1.5 rounded-xl border border-black/10 bg-white p-2 shadow-[0_8px_28px_rgba(15,23,42,.18)]"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => event.stopPropagation()}
+                >
+                    <div className="flex flex-col gap-2">
+                        {[GROUP_COLORS.slice(0, 5), GROUP_COLORS.slice(5)].map((row, rowIndex) => (
+                            <div key={rowIndex} className="flex gap-2">
+                                {row.map((color) => (
+                                    <button
+                                        key={color}
+                                        type="button"
+                                        className="block size-6 cursor-pointer rounded-full border border-black/15 transition hover:scale-110"
+                                        style={{ background: color, boxShadow: current === color ? `0 0 0 2px #ffffff, 0 0 0 4px ${color}` : undefined }}
+                                        aria-label={color}
+                                        onClick={() => {
+                                            onSelect(color);
+                                            onOpenChange(false);
+                                        }}
+                                    />
+                                ))}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+const ARRANGE_MODES: Array<{ mode: NodeArrangeMode; label: string; icon: ReactNode }> = [
+    { mode: "grid", label: "canvas.nodeToolbar.arrangeGrid", icon: <Grid2x2 className="size-4" /> },
+    { mode: "vertical", label: "canvas.nodeToolbar.arrangeVertical", icon: <AlignVerticalJustifyCenter className="size-4" /> },
+    { mode: "horizontal", label: "canvas.nodeToolbar.arrangeHorizontal", icon: <AlignHorizontalJustifyCenter className="size-4" /> },
+];
+
+function GroupArrangeTool({ node, open, onOpenChange, onSelect }: { node: CanvasNodeData; open: boolean; onOpenChange: (next: boolean) => void; onSelect: (mode: NodeArrangeMode) => void }) {
+    const { t } = useTranslation();
+    return (
+        <div className="relative" data-group-menu>
+            {/* Tooltip 只挂在图标按钮上,菜单打开时禁用,避免提示遮住下拉菜单 */}
+            <Tooltip title={t("canvas.nodeToolbar.arrangeSelected")} placement="top" mouseEnterDelay={0.2} open={open ? false : undefined} color="#ffffff" styles={{ root: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
+                <button type="button" className="group relative flex h-12 items-center px-1.5" onClick={() => onOpenChange(!open)} aria-label={t("canvas.nodeToolbar.arrangeSelected")} aria-expanded={open}>
+                    <span className={`flex h-9 items-center justify-center rounded-lg px-2 transition group-hover:bg-[#f0f0f1] ${open ? "bg-[#eeeeef]" : ""}`}>
+                        <Grid2x2 className="size-4" />
+                    </span>
+                </button>
+            </Tooltip>
+            {open ? (
+                <div
+                    className="absolute left-1/2 top-full z-[80] mt-1.5 min-w-36 -translate-x-1/2 rounded-xl border border-black/10 bg-white p-1 shadow-[0_8px_28px_rgba(15,23,42,.18)]"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => event.stopPropagation()}
+                >
+                    {ARRANGE_MODES.map((item) => (
+                        <button
+                            key={item.mode}
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-[#242529] transition hover:bg-[#f0f0f1]"
+                            onClick={() => {
+                                onSelect(item.mode);
+                                onOpenChange(false);
+                            }}
+                        >
+                            {item.icon}
+                            <span>{t(item.label)}</span>
+                        </button>
+                    ))}
+                </div>
+            ) : null}
+        </div>
     );
 }
 

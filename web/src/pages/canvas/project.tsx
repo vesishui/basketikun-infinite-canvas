@@ -49,7 +49,7 @@ import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
-import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, getConnectionTargetAnchor, getGroupWrapRect, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { applyGroupSelection, applyUngroupSelection, arrangeNodes, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, getConnectionTargetAnchor, getGroupWrapRect, normalizeConnection, snapNodesIntoGroup, type NodeArrangeMode } from "@/lib/canvas/canvas-node-geometry";
 import {
     audioExtension,
     buildAngleLabel,
@@ -308,16 +308,21 @@ function InfiniteCanvasPage() {
         if (request?.controller === controller) generationRequestsRef.current.delete(targetNodeId);
     }, []);
 
+    // 生成中把「进度:N%」写入 errorDetails,由 LoadingContent 渲染成进度条
+    const setVideoNodeProgress = useCallback((nodeId: string, text: string) => {
+        setNodes((prev) => prev.map((item) => (item.id === nodeId && item.metadata?.status === NODE_STATUS_LOADING ? { ...item, metadata: { ...item.metadata, errorDetails: text } } : item)));
+    }, []);
+
     const completeVideoNodeTask = useCallback(
         async (nodeId: string, config: Parameters<typeof buildGenerationConfig>[0], prompt: string, images: Parameters<typeof createVideoGenerationTask>[2], signal: AbortSignal, extra: CanvasNodeData["metadata"] = {}, videos: ReferenceVideo[] = [], audios: ReferenceAudio[] = []) => {
-            const task = await createVideoGenerationTask(config, prompt, images, { signal, videos, audios });
+            const task = await createVideoGenerationTask(config, prompt, images, { signal, videos, audios, onProgress: (text) => setVideoNodeProgress(nodeId, text) });
             if (task.provider !== "plugin") {
                 setNodes((prev) => prev.map((item) => (item.id === nodeId ? { ...item, metadata: { ...item.metadata, videoTaskId: task.id, videoTaskProvider: task.provider === "gemini" ? "gemini" : "openai", model: config.model } } : item)));
             }
-            const video = await storeGeneratedVideo(await waitForVideoGenerationTask(config, task, { signal }));
+            const video = await storeGeneratedVideo(await waitForVideoGenerationTask(config, task, { signal, onProgress: (text) => setVideoNodeProgress(nodeId, text) }));
             setNodes((prev) => prev.map((item) => (item.id === nodeId ? applyGeneratedVideo(item, video, { prompt, model: config.model, ...extra }) : item)));
         },
-        [],
+        [setVideoNodeProgress],
     );
 
     const pollVideoNodeTask = useCallback(
@@ -339,7 +344,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(node.id);
                 setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item)));
                 controller = startGenerationRequest(node.id, node.id, node.id);
-                const video = await storeGeneratedVideo(await waitForVideoGenerationTask(generationConfig, { id: taskId, provider: node.metadata?.videoTaskProvider === "gemini" ? "gemini" : "openai", model: generationConfig.model }, { signal: controller.signal }));
+                const video = await storeGeneratedVideo(await waitForVideoGenerationTask(generationConfig, { id: taskId, provider: node.metadata?.videoTaskProvider === "gemini" ? "gemini" : "openai", model: generationConfig.model }, { signal: controller.signal, onProgress: (text) => setVideoNodeProgress(node.id, text) }));
                 setNodes((prev) =>
                     prev.map((item) =>
                         item.id === node.id
@@ -893,6 +898,26 @@ function InfiniteCanvasPage() {
         setToolbarNodeId(result.selectedIds.length === 1 ? result.selectedIds[0] : null);
         setDialogNodeId(null);
         setContextMenu(null);
+    }, []);
+
+    const arrangeSelectedNodes = useCallback((mode: NodeArrangeMode) => {
+        const targets = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && node.type !== CanvasNodeType.Group);
+        if (targets.length < 2) return;
+        const arranged = arrangeNodes(targets, mode);
+        const positionById = new Map(arranged.map((node) => [node.id, node.position]));
+        setNodes((prev) => prev.map((node) => (positionById.has(node.id) ? { ...node, position: positionById.get(node.id)! } : node)));
+    }, []);
+
+    const arrangeGroupMembers = useCallback((groupNode: CanvasNodeData, mode: NodeArrangeMode) => {
+        const members = nodesRef.current.filter((node) => node.metadata?.groupId === groupNode.id && node.type !== CanvasNodeType.Group);
+        if (members.length < 2) return;
+        const arranged = arrangeNodes(members, mode);
+        const positionById = new Map(arranged.map((node) => [node.id, node.position]));
+        setNodes((prev) => prev.map((node) => (positionById.has(node.id) ? { ...node, position: positionById.get(node.id)! } : node)));
+    }, []);
+
+    const setGroupColor = useCallback((groupNode: CanvasNodeData, color: string) => {
+        setNodes((prev) => prev.map((node) => (node.id === groupNode.id ? { ...node, metadata: { ...node.metadata, groupColor: color } } : node)));
     }, []);
 
     const deleteConnection = useCallback((connectionId: string) => {
@@ -3359,6 +3384,8 @@ function InfiniteCanvasPage() {
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                     onUngroup={(node) => ungroupSelection(new Set([node.id]))}
+                    onArrange={arrangeGroupMembers}
+                    onGroupColor={setGroupColor}
                 />
 
                 {hasMultipleSelectedNodes && !selectionBox ? (
@@ -3370,6 +3397,7 @@ function InfiniteCanvasPage() {
                         canUngroup={canUngroupSelection}
                         onGroup={groupSelection}
                         onUngroup={ungroupSelection}
+                        onArrange={arrangeSelectedNodes}
                     />
                 ) : null}
 
