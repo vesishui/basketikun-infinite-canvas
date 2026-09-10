@@ -308,8 +308,16 @@ function InfiniteCanvasPage() {
         if (request?.controller === controller) generationRequestsRef.current.delete(targetNodeId);
     }, []);
 
-    // 生成中把「进度:N%」写入 errorDetails,由 LoadingContent 渲染成进度条
+    // 生成中把「进度:N%」写入 errorDetails,由 LoadingContent 渲染成进度条;
+    // 脚本用「任务ID:<id>」上报远端任务 ID,存进节点以便刷新/停止后按 ID 恢复轮询
     const setVideoNodeProgress = useCallback((nodeId: string, text: string) => {
+        const taskMatch = text.match(/^任务ID:(.+)$/);
+        if (taskMatch) {
+            const videoTaskId = taskMatch[1].trim();
+            if (!videoTaskId) return;
+            setNodes((prev) => prev.map((item) => (item.id === nodeId ? { ...item, metadata: { ...item.metadata, videoTaskId, videoTaskProvider: "plugin" } } : item)));
+            return;
+        }
         setNodes((prev) => prev.map((item) => (item.id === nodeId && item.metadata?.status === NODE_STATUS_LOADING ? { ...item, metadata: { ...item.metadata, errorDetails: text } } : item)));
     }, []);
 
@@ -331,6 +339,7 @@ function InfiniteCanvasPage() {
             if (!taskId || node.metadata?.content || generationRequestsRef.current.has(node.id) || videoPollIdsRef.current.has(node.id)) return;
             videoPollIdsRef.current.add(node.id);
             let controller: AbortController | undefined;
+            let provider: string | undefined;
             try {
                 const generationConfig = buildGenerationConfig(effectiveConfig, node, "video");
                 if (!isAiConfigReady(generationConfig, generationConfig.model)) {
@@ -344,7 +353,10 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(node.id);
                 setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item)));
                 controller = startGenerationRequest(node.id, node.id, node.id);
-                const video = await storeGeneratedVideo(await waitForVideoGenerationTask(generationConfig, { id: taskId, provider: node.metadata?.videoTaskProvider === "gemini" ? "gemini" : "openai", model: generationConfig.model }, { signal: controller.signal, onProgress: (text) => setVideoNodeProgress(node.id, text) }));
+                provider = node.metadata?.videoTaskProvider;
+                // 插件渠道携带已存任务 ID 重跑脚本恢复轮询;内置渠道沿用原任务 ID
+                const task = provider === "plugin" ? await createVideoGenerationTask(generationConfig, node.metadata?.prompt || "", [], { signal: controller.signal, videoTaskId: taskId, onProgress: (text) => setVideoNodeProgress(node.id, text) }) : { id: taskId, provider: provider === "gemini" ? "gemini" : "openai", model: generationConfig.model };
+                const video = await storeGeneratedVideo(await waitForVideoGenerationTask(generationConfig, task, { signal: controller.signal, onProgress: (text) => setVideoNodeProgress(node.id, text) }));
                 setNodes((prev) =>
                     prev.map((item) =>
                         item.id === node.id
@@ -374,7 +386,7 @@ function InfiniteCanvasPage() {
                                       ...item.metadata,
                                       status: item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
                                       errorDetails: item.metadata?.content ? undefined : errorDetails,
-                                      ...(isVideoTaskFailed(error) ? { videoTaskId: undefined } : {}),
+                                      ...(isVideoTaskFailed(error) || provider === "plugin" ? { videoTaskId: undefined } : {}),
                                   },
                               }
                             : item,
