@@ -13,6 +13,8 @@ export type ChannelModel = {
     name: string;
     capability: ModelCapability;
     script?: string;
+    /** 禁用后不进模型选择列表，也不参与生成 */
+    disabled?: boolean;
 };
 
 export type ModelChannel = {
@@ -22,6 +24,8 @@ export type ModelChannel = {
     apiKey: string;
     apiFormat: ApiCallFormat;
     models: ChannelModel[];
+    /** 禁用后模型不进选择列表，也不参与生成 */
+    disabled?: boolean;
 };
 
 export type AiConfig = {
@@ -168,8 +172,8 @@ export function guessCapability(name: string): ModelCapability {
 function findChannelModel(config: AiConfig, value: string): { channel: ModelChannel; model: ChannelModel } | null {
     const decoded = decodeChannelModel(value);
     const name = decoded?.model || value;
-    const channel = decoded ? config.channels.find((item) => item.id === decoded.channelId) : config.channels.find((item) => item.models.some((model) => model.name === name));
-    const model = channel?.models.find((item) => item.name === name);
+    const channel = decoded ? config.channels.find((item) => !item.disabled && item.id === decoded.channelId) : config.channels.find((item) => !item.disabled && item.models.some((model) => model.name === name));
+    const model = channel?.models.find((item) => !item.disabled && item.name === name);
     return channel && model ? { channel, model } : null;
 }
 
@@ -192,7 +196,7 @@ export function resolveModelForCapability(config: AiConfig, currentModel: string
 
 export function selectableModelsByCapability(config: AiConfig, capability?: ModelCapability) {
     if (!capability) return config.models;
-    return config.channels.flatMap((channel) => channel.models.filter((model) => model.capability === capability).map((model) => encodeChannelModel(channel.id, model.name)));
+    return config.channels.filter((channel) => !channel.disabled).flatMap((channel) => channel.models.filter((model) => !model.disabled && model.capability === capability).map((model) => encodeChannelModel(channel.id, model.name)));
 }
 
 /** The user script (if any) attached to a model; empty string means use the system default call. */
@@ -361,7 +365,8 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
         seen.add(name);
         const capability = typeof item === "string" ? guessCapability(name) : item.capability || guessCapability(name);
         const script = typeof item === "string" ? undefined : item.script?.trim() || undefined;
-        result.push({ name, capability, script });
+        const disabled = typeof item !== "string" && item.disabled === true;
+        result.push({ name, capability, script, disabled });
     }
     return result;
 }
@@ -375,6 +380,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         apiKey: channel?.apiKey || "",
         apiFormat,
         models: normalizeChannelModels(channel?.models),
+        disabled: channel?.disabled === true,
     };
 }
 
@@ -404,7 +410,7 @@ export function modelOptionLabel(config: AiConfig, value: string) {
 }
 
 export function modelOptionsFromChannels(channels: ModelChannel[]) {
-    return uniqueModelOptions(channels.flatMap((channel) => channel.models.map((model) => encodeChannelModel(channel.id, model.name))));
+    return uniqueModelOptions(channels.filter((channel) => !channel.disabled).flatMap((channel) => channel.models.filter((model) => !model.disabled).map((model) => encodeChannelModel(channel.id, model.name))));
 }
 
 export function normalizeModelOptionValue(value: string | undefined, channels: ModelChannel[]) {
@@ -412,18 +418,19 @@ export function normalizeModelOptionValue(value: string | undefined, channels: M
     if (!model) return "";
     const decoded = decodeChannelModel(model);
     if (decoded) {
-        const channel = channels.find((item) => item.id === decoded.channelId);
-        return channel && channel.models.some((item) => item.name === decoded.model) ? model : "";
+        const channel = channels.find((item) => !item.disabled && item.id === decoded.channelId);
+        return channel && channel.models.some((item) => !item.disabled && item.name === decoded.model) ? model : "";
     }
-    const channel = channels.find((item) => item.models.some((entry) => entry.name === model)) || channels[0];
-    return channel && channel.models.some((item) => item.name === model) ? encodeChannelModel(channel.id, model) : model;
+    const channel = channels.find((item) => !item.disabled && item.models.some((entry) => entry.name === model)) || channels.find((item) => !item.disabled);
+    return channel && channel.models.some((item) => !item.disabled && item.name === model) ? encodeChannelModel(channel.id, model) : model;
 }
 
 export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
-    const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.some((item) => item.name === model));
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: i18n.t("config.channels.defaultName"), baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })) });
+    const matched = decoded ? config.channels.find((channel) => !channel.disabled && channel.id === decoded.channelId) : config.channels.find((channel) => !channel.disabled && channel.models.some((item) => item.name === model));
+    const fallback = matched || config.channels.find((channel) => !channel.disabled) || config.channels[0];
+    return fallback || createModelChannel({ id: "default", name: i18n.t("config.channels.defaultName"), baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })) });
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {

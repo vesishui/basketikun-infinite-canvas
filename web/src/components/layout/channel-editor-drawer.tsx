@@ -1,4 +1,4 @@
-import { Button, Drawer, Input, Segmented, Select, Space } from "antd";
+import { Button, Drawer, Input, Segmented, Select, Space, Switch } from "antd";
 import { ListPlus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -18,7 +18,8 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         { label: "OpenAI", value: "openai" },
         { label: "Gemini", value: "gemini" },
     ];
-    const capabilityOptions: Array<{ label: string; value: ModelCapability }> = ["image", "video", "text", "audio"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as ModelCapability }));
+    type CapabilityOptionValue = ModelCapability | "disabled";
+    const capabilityOptions: Array<{ label: string; value: CapabilityOptionValue }> = ["image", "video", "text", "audio", "disabled"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as CapabilityOptionValue }));
 
     useEffect(() => {
         if (open && channel) setDraft(channel);
@@ -39,7 +40,8 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         setModels(names.map((name) => map.get(name) || { name, capability: guessCapability(name) }));
     };
 
-    const setCapability = (name: string, capability: ModelCapability) => setModels(draft.models.map((model) => (model.name === name ? { ...model, capability } : model)));
+    const setCapability = (name: string, capability: ModelCapability) => setModels(draft.models.map((model) => (model.name === name ? { ...model, capability, disabled: false } : model)));
+    const setModelDisabled = (name: string, disabled: boolean) => setModels(draft.models.map((model) => (model.name === name ? { ...model, disabled } : model)));
     const setScript = (name: string, script: string) => setModels(draft.models.map((model) => (model.name === name ? { ...model, script: script || undefined } : model)));
     const removeModel = (name: string) => setModels(draft.models.filter((model) => model.name !== name));
 
@@ -77,6 +79,13 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <span className="mb-1 block text-sm font-medium">{t("config.channelEditor.baseUrl")}</span>
                     <Input value={draft.baseUrl} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="https://api.example.com" />
                 </label>
+                <div className="flex items-center justify-between gap-3 md:col-span-2">
+                    <div>
+                        <div className="text-sm font-medium">{t("config.channelEditor.disabled")}</div>
+                        <div className="mt-0.5 text-xs text-stone-500">{t("config.channelEditor.disabledDescription")}</div>
+                    </div>
+                    <Switch checked={Boolean(draft.disabled)} onChange={(checked) => patch({ disabled: checked })} />
+                </div>
                 <label className="block md:col-span-2">
                     <span className="mb-1 block text-sm font-medium">API Key</span>
                     <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
@@ -101,7 +110,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                                 {model.name}
                             </span>
                             <div className="flex shrink-0 items-center gap-2">
-                                <Segmented size="small" value={model.capability} options={capabilityOptions} onChange={(value) => setCapability(model.name, value as ModelCapability)} />
+                                <Segmented size="small" value={model.disabled ? "disabled" : model.capability} options={capabilityOptions} onChange={(value) => (value === "disabled" ? setModelDisabled(model.name, true) : setCapability(model.name, value as ModelCapability))} />
                                 <Button size="small" type={model.script ? "primary" : "default"} ghost={Boolean(model.script)} onClick={() => setScriptTarget({ name: model.name, capability: model.capability, value: model.script || "" })}>
                                     {t(model.script ? "config.channelEditor.scriptReady" : "config.channelEditor.script")}
                                 </Button>
