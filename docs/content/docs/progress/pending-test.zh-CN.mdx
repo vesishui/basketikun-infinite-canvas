@@ -99,4 +99,5 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 画布渠道直连对话 @ 引用节点映射：在右侧 Agent 面板选中「画布渠道」模型后，输入框里 `@` 引用的节点（如 @参考视频3）在消息气泡中的显示应保持不变，但发送给第三方模型的文本中应附带节点映射列表（mention=@标签、nodeId、title、type）；第三方模型应能根据 nodeId 用 `canvas_select_nodes` → `canvas_get_selection` 定向读取并操作对应节点，而不是按标签或标题猜测，也不再引导用 `canvas_get_state` 全量拉取。
 - Canvas Agent 执行规约初始化：`canvas-agent/agent-instructions.md` 升级为「工具路由 + 执行纪律」合并版（定向读、批量 `canvas_apply_ops`、写完回读校验、提示词只写用户可见 `metadata.prompt`、禁止把全画布快照复述进对话），Codex 路径经工作区 AGENTS.md 自动加载，画布渠道 direct chat 每条请求自动注入同一份为 system 消息。测试前先删除 `~/.infinite-canvas/codex-workspaces/site/AGENTS.md` 并重启 canvas-agent 让其按新内容重新生成；随后在两条路径各下发一个多节点任务（如「复刻该节点并保留全部引用」），观察：开工先输出 ≤5 行动作清单、建/连/改合批提交、每批后一次定向回读校验、收尾只给简表、对话中不出现原始画布 JSON。
 - 画布渠道多会话：切换第三方渠道或模型时，之前的对话历史应保留并可在历史页切回；点「新建对话」应开启新会话而不删除旧会话；只有删除会话时历史才消失。画布渠道模型的思考程度下拉应显示 low/medium/high 选项（不再为空），所选 effort 应透传到上游 API（deepseek 等推理模型生效）。
+- 局部遮罩编辑按钮文案：图片节点局部编辑弹窗底部两个按钮应显示「导出标注图」「生成修改图」（此前直接显示 canvas.editors.maskExport / maskGenerate 键名原文）；英文语言下为 Export annotated image / Generate edited image。「导出标注图」只创建遮罩标注节点与带提示词的结果节点、不触发生成，「生成修改图」直接开始生成。
 Canvas Agent 配置权限
