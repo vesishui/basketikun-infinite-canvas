@@ -970,7 +970,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     : "";
                 let userContent = text;
                 if (referenceText) userContent += `\n\n[引用画布内容]\n${referenceText}`;
-                if (nodeMapping) userContent += `\n\n[节点映射] 用户消息中的 @引用对应以下画布节点，需要读取或操作这些节点时，请用对应的 nodeId 精确调用画布工具（如 canvas_get_state），不要按标签或标题猜测：\n${nodeMapping}`;
+                if (nodeMapping) userContent += `\n\n[节点映射] 用户消息中的 @引用对应以下画布节点，需要读取或操作这些节点时，请用对应的 nodeId 调用画布工具（读内容用 canvas_select_nodes → canvas_get_selection 定向读取，不要 canvas_get_state 全量拉取），不要按标签或标题猜测：\n${nodeMapping}`;
                 // 独立维护对话历史（不走 store 的 scope/merge，保证多轮顺序正确）
                 const history = [...directChatHistoryRef.current, { role: "user" as const, content: userContent }];
                 const res = await fetch(`${endpoint}/agent/direct/chat?token=${encodeURIComponent(token)}`, {

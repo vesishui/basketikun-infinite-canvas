@@ -282,6 +282,15 @@ export function startHttpServer() {
             return text.length > 300 ? `${text.slice(0, 300)}…` : text;
         };
         let workingMessages = messages as Array<Record<string, unknown>>;
+        // 画布执行规约注入：以工作区 AGENTS.md 为唯一来源（Codex 路径读同一份），画布渠道每条请求自动带 system，第三方模型无需人工粘贴初始化提示词
+        if (workingMessages[0]?.role !== "system") {
+            try {
+                const directive = (await readFile(path.join(ensureSiteWorkspace(config).workspacePath, "AGENTS.md"), "utf8")).trim();
+                if (directive) workingMessages = [{ role: "system", content: directive }, ...workingMessages];
+            } catch {
+                // 读不到 AGENTS.md 时保持原行为，不注入
+            }
+        }
         let finalContent = "";
         // 工具调用循环：模型可多轮调用画布工具（会经画布页面的确认卡片），最多 DIRECT_CHAT_MAX_TOOL_ROUNDS 轮
         const abortController = new AbortController();
