@@ -16,6 +16,8 @@ const MASK_RGB: [number, number, number] = [37, 99, 235];
 const MASK_ALPHA = 0.4;
 // 与宿主 i18n canvas.projectPage.maskPrompt 模板一致：图片1=原图，图片2=标注图（前缀由宿主按入边顺序自动编号）
 const MASK_PROMPT = "参考图片1为原图，图片2是在原图上用蓝色半透明标注出的待修改区域。请只修改蓝色标注覆盖的区域，其余区域与原图保持完全一致，输出与原图相同尺寸的完整图片，并且结果中不要保留任何蓝色标注。修改要求：";
+// 分层后原图上被抠走的洞交给画布局部重绘补，模型由用户在结果节点上自选
+const BG_PROMPT = MASK_PROMPT + "把蓝色标注区域补全为周围背景的连续延伸，不要留下被抠走对象的任何痕迹、阴影或空洞。";
 
 async function ensureStatic(url: string, script: string) {
     const res = await fetch(url);
@@ -296,6 +298,16 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
         ops.push({ type: "connect_nodes", fromNodeId: ctx.node.id, toNodeId: id });
     };
 
+    // 入边顺序必须是原图 → 标注图，对应提示词里的「图片1/图片2」
+    const addMaskPair = (ops: CanvasAgentOp[], stamp: string, overlay: string, title: string, prompt: string, x: number, y: number, w: number, h: number) => {
+        const maskId = `cutout-mask-${stamp}`, resultId = `cutout-edit-${stamp}`;
+        ops.push({ type: "add_node", id: maskId, nodeType: "image", title: `遮罩标注 ${title}`, x, y, width: w, height: h, metadata: { content: overlay, mimeType: "image/png", status: "success" } });
+        ops.push({ type: "connect_nodes", fromNodeId: ctx.node.id, toNodeId: maskId });
+        ops.push({ type: "add_node", id: resultId, nodeType: "image", title, x: x + w + 90, y, width: w, height: h, metadata: { prompt } });
+        ops.push({ type: "connect_nodes", fromNodeId: sourceNode!.id, toNodeId: resultId });
+        ops.push({ type: "connect_nodes", fromNodeId: maskId, toNodeId: resultId });
+    };
+
     const exportLayered = useCallback(async () => {
         const ready = pins.filter((p) => p.mask);
         if (!ready.length) { setError("先加角标或点「一键分层」，等分割完成"); return; }
@@ -304,16 +316,23 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
             const img = await loadImageEl(source); const fw = img.naturalWidth, fh = img.naturalHeight;
             const base = await toBase(img, fw, fh);
             const ops: CanvasAgentOp[] = []; const stamp = Date.now(); let y = ctx.node.position.y;
+            const lx = ctx.node.position.x + ctx.node.width + 90;
             for (let i = 0; i < ready.length; i++) {
                 const m = ready[i].mask!; const bb = bboxOf([m]);
                 const dataUrl = await maskedDataUrl(base, fw, fh, feather(m, fw, fh, featherR), bb, 8 + featherR);
                 const di = await loadImageEl(dataUrl); const w = 240; const h = Math.max(40, Math.round((240 * di.naturalHeight) / Math.max(1, di.naturalWidth)));
-                addImageNode(ops, `cutout-l-${stamp}-${i}`, `素材 ${i + 1}`, { content: dataUrl, mimeType: "image/png", status: "success" }, ctx.node.position.x + ctx.node.width + 90, y, w, h);
+                addImageNode(ops, `cutout-l-${stamp}-${i}`, `素材 ${i + 1}`, { content: dataUrl, mimeType: "image/png", status: "success" }, lx, y, w, h);
                 y += h + 24;
+            }
+            // 前景被拿走后原图上会留下洞，顺手落一对「遮罩标注图 → 补背景节点」，同样等用户自选模型生成
+            if (sourceNode) {
+                const merged = unionMask(ready.map((p) => p.mask!), fh, fw);
+                const overlay = await maskOverlayDataUrl(base, fw, fh, merged);
+                addMaskPair(ops, `bg-${stamp}`, overlay, "补背景", BG_PROMPT, lx + 330, ctx.node.position.y, sourceNode.width, sourceNode.height);
             }
             ctx.applyOps(ops);
         } catch (e) { setError(errText(e)); } finally { setBusy(false); }
-    }, [pins, source, ctx]);
+    }, [pins, source, sourceNode, ctx, featherR]);
 
     const exportMerged = useCallback(async () => {
         const ready = pins.filter((p) => p.mask);
@@ -328,7 +347,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
             const ops: CanvasAgentOp[] = []; addImageNode(ops, `cutout-m-${Date.now()}`, "抠图合并层", { content: dataUrl, mimeType: "image/png", status: "success" }, ctx.node.position.x + ctx.node.width + 90, ctx.node.position.y, w, h);
             ctx.applyOps(ops);
         } catch (e) { setError(errText(e)); } finally { setBusy(false); }
-    }, [pins, source, ctx]);
+    }, [pins, source, ctx, featherR]);
 
     // 发送到画布做局部重绘：落「遮罩标注图 + 结果节点」，结果节点入边顺序=原图→标注图（对应提示词里的图片1/图片2）
     const sendRedrawToCanvas = useCallback(async () => {
@@ -351,15 +370,11 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
             }
             const ops: CanvasAgentOp[] = []; const stamp = Date.now();
             let y = ctx.node.position.y;
+            const x0 = ctx.node.position.x + ctx.node.width + 90;
             for (let i = 0; i < plan.length; i++) {
                 const overlay = await maskOverlayDataUrl(base, fw, fh, plan[i].mask);
-                const maskId = `cutout-mask-${stamp}-${i}`; const resultId = `cutout-edit-${stamp}-${i}`;
-                const x0 = ctx.node.position.x + ctx.node.width + 90;
-                ops.push({ type: "add_node", id: maskId, nodeType: "image", title: `遮罩标注 ${i + 1}`, x: x0, y, width: sourceNode.width, height: sourceNode.height, metadata: { content: overlay, mimeType: "image/png", status: "success" } });
-                ops.push({ type: "connect_nodes", fromNodeId: ctx.node.id, toNodeId: maskId });
-                ops.push({ type: "add_node", id: resultId, nodeType: "image", title: plan[i].prompt.slice(0, 32), x: x0 + sourceNode.width + 90, y, width: sourceNode.width, height: sourceNode.height, metadata: { prompt: MASK_PROMPT + plan[i].prompt } });
-                ops.push({ type: "connect_nodes", fromNodeId: sourceNode.id, toNodeId: resultId });
-                ops.push({ type: "connect_nodes", fromNodeId: maskId, toNodeId: resultId });
+                const title = plan[i].prompt.slice(0, 32);
+                addMaskPair(ops, `${stamp}-${i}`, overlay, title, MASK_PROMPT + plan[i].prompt, x0, y, sourceNode.width, sourceNode.height);
                 y += sourceNode.height + 40;
             }
             ctx.applyOps(ops);
@@ -416,7 +431,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
 export default definePlugin({
     id: "cutout-studio",
     name: "抠图工作台",
-    version: "0.6.4",
+    version: "0.6.5",
     description: "海报分层：一键/点选拆出透明图层做动画；遮罩+提示词接画布局部重绘，模型自选。",
     nodes: [
         {
