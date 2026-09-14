@@ -82,16 +82,45 @@ async function toBase(img: HTMLImageElement, fw: number, fh: number): Promise<Im
     return ctx2.getImageData(0, 0, fw, fh);
 }
 
-// 源图按 mask 裁出透明 PNG（分层做动画用）
-async function maskedDataUrl(base: ImageData, fw: number, fh: number, masks: number[][], bbox: { x0: number; y0: number; x1: number; y1: number }): Promise<string> {
+// SAM 出来的是硬二值边，直接透明化会留明显锯齿。实测过 trimap matting 精修（ViTMatte）
+// 但结果比原 mask 更差（MSE 0.003 → 0.009，且基本无视 trimap 带宽），所以这里只做确定性羽化。
+// 可分离盒模糊，镜像边界，避免贴边对象在画框处被削出一圈半透明。
+const mirror = (i: number, n: number) => (n < 2 ? 0 : i < 0 ? -i : i >= n ? 2 * n - 2 - i : i);
+
+function feather(mask: number[][], fw: number, fh: number, r: number): Uint8ClampedArray {
+    const out = new Uint8ClampedArray(fw * fh);
+    const span = 2 * r + 1;
+    if (r <= 0) { for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) out[y * fw + x] = mask[y][x] ? 255 : 0; return out; }
+    const tmp = new Float32Array(fw * fh);
+    for (let y = 0; y < fh; y++) {
+        const row = mask[y]; let sum = 0;
+        for (let d = -r; d <= r; d++) sum += row[mirror(d, fw)] ? 1 : 0;
+        for (let x = 0; x < fw; x++) {
+            tmp[y * fw + x] = sum / span;
+            sum += row[mirror(x + r + 1, fw)] ? 1 : 0;
+            sum -= row[mirror(x - r, fw)] ? 1 : 0;
+        }
+    }
+    for (let x = 0; x < fw; x++) {
+        let sum = 0;
+        for (let d = -r; d <= r; d++) sum += tmp[mirror(d, fh) * fw + x];
+        for (let y = 0; y < fh; y++) {
+            out[y * fw + x] = Math.round(255 * sum / span);
+            sum += tmp[mirror(y + r + 1, fh) * fw + x] - tmp[mirror(y - r, fh) * fw + x];
+        }
+    }
+    return out;
+}
+
+// 源图按软 alpha 裁出透明 PNG（分层做动画用）
+async function maskedDataUrl(base: ImageData, fw: number, fh: number, alpha: Uint8ClampedArray, bbox: { x0: number; y0: number; x1: number; y1: number }, pad = 8): Promise<string> {
     const tmp = document.createElement("canvas"); tmp.width = fw; tmp.height = fh;
     const tc = tmp.getContext("2d", { willReadFrequently: true })!;
     tc.putImageData(base, 0, 0);
     const frame = tc.getImageData(0, 0, fw, fh);
     const d = frame.data;
-    for (let y = 0; y < fh; y++) { const row = masks[y]; for (let x = 0; x < fw; x++) if (!row || !row[x]) d[(y * fw + x) * 4 + 3] = 0; }
+    for (let i = 0, n = fw * fh; i < n; i++) d[i * 4 + 3] = alpha[i];
     tc.putImageData(frame, 0, 0);
-    const pad = 8;
     const cx = Math.max(0, bbox.x0 - pad), cy = Math.max(0, bbox.y0 - pad);
     const cw = Math.min(fw - cx, bbox.x1 - bbox.x0 + 1 + pad * 2 - (bbox.x0 - cx));
     const ch = Math.min(fh - cy, bbox.y1 - bbox.y0 + 1 + pad * 2 - (bbox.y0 - cy));
@@ -149,6 +178,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
     const source = sourceNode?.url || "";
     const [pins, setPins] = useState<Pin[]>(() => (Array.isArray(ctx.node.metadata?.cutoutPins) ? (ctx.node.metadata!.cutoutPins as { x: number; y: number }[]).map((p) => ({ id: pinSeq++, x: p.x, y: p.y, status: "idle" as const })) : []));
     const [markMode, setMarkMode] = useState(true);
+    const [featherR, setFeatherR] = useState(() => (typeof ctx.node.metadata?.cutoutFeather === "number" ? (ctx.node.metadata!.cutoutFeather as number) : 2));
     const [instruction, setInstruction] = useState("");
     const [modelStatus, setModelStatus] = useState("SAM 未加载（点角标时自动加载，首次约几百 MB 走缓存）");
     const [busy, setBusy] = useState(false);
@@ -160,7 +190,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
     ctxRef.current = ctx;
 
     useEffect(() => { if (!source) { setPins([]); samRef.current = null; } }, [source]);
-    useEffect(() => { ctxRef.current.updateMetadata({ cutoutPins: pins.map((p) => ({ x: p.x, y: p.y })) }); }, [pins]);
+    useEffect(() => { ctxRef.current.updateMetadata({ cutoutPins: pins.map((p) => ({ x: p.x, y: p.y })), cutoutFeather: featherR }); }, [pins, featherR]);
 
     const ensureSam = useCallback(async (): Promise<Sam> => {
         if (samRef.current && samRef.current.key === source) return samRef.current;
@@ -276,7 +306,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
             const ops: CanvasAgentOp[] = []; const stamp = Date.now(); let y = ctx.node.position.y;
             for (let i = 0; i < ready.length; i++) {
                 const m = ready[i].mask!; const bb = bboxOf([m]);
-                const dataUrl = await maskedDataUrl(base, fw, fh, m, bb);
+                const dataUrl = await maskedDataUrl(base, fw, fh, feather(m, fw, fh, featherR), bb, 8 + featherR);
                 const di = await loadImageEl(dataUrl); const w = 240; const h = Math.max(40, Math.round((240 * di.naturalHeight) / Math.max(1, di.naturalWidth)));
                 addImageNode(ops, `cutout-l-${stamp}-${i}`, `素材 ${i + 1}`, { content: dataUrl, mimeType: "image/png", status: "success" }, ctx.node.position.x + ctx.node.width + 90, y, w, h);
                 y += h + 24;
@@ -293,7 +323,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
             const img = await loadImageEl(source); const fw = img.naturalWidth, fh = img.naturalHeight;
             const base = await toBase(img, fw, fh);
             const merged = unionMask(ready.map((p) => p.mask!), fh, fw);
-            const dataUrl = await maskedDataUrl(base, fw, fh, merged, bboxOf([merged]));
+            const dataUrl = await maskedDataUrl(base, fw, fh, feather(merged, fw, fh, featherR), bboxOf([merged]), 8 + featherR);
             const di = await loadImageEl(dataUrl); const w = 260; const h = Math.max(40, Math.round((260 * di.naturalHeight) / Math.max(1, di.naturalWidth)));
             const ops: CanvasAgentOp[] = []; addImageNode(ops, `cutout-m-${Date.now()}`, "抠图合并层", { content: dataUrl, mimeType: "image/png", status: "success" }, ctx.node.position.x + ctx.node.width + 90, ctx.node.position.y, w, h);
             ctx.applyOps(ops);
@@ -360,7 +390,12 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
                         <button type="button" style={{ ...btn(), flex: 1, fontSize: 12 }} disabled={busy || !source} onClick={() => void autoLayer()}>一键分层</button>
                         <button type="button" style={{ ...btn(), fontSize: 12 }} disabled={!pins.length} onClick={() => setPins([])}>清空({pins.length})</button>
                     </div>
-                    <div style={{ fontSize: 12, color: ctx.theme.node.muted, marginTop: 2 }}>透明图层（每个标记=一个可动图层）</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: ctx.theme.node.muted }}>
+                        <span>边缘羽化</span>
+                        <input type="range" min={0} max={8} value={featherR} onChange={(e) => setFeatherR(Number(e.target.value))} style={{ flex: 1, accentColor: "#2563eb" }} />
+                        <span style={{ width: 30, textAlign: "right" }}>{featherR}px</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: ctx.theme.node.muted }}>透明图层（每个标记=一个可动图层）</div>
                     <div style={{ display: "flex", gap: 8 }}>
                         <button type="button" style={{ ...btn(), flex: 1, fontSize: 12 }} disabled={!pins.some((p) => p.mask) || busy} onClick={() => void exportLayered()}>分层导出</button>
                         <button type="button" style={{ ...btn(), flex: 1, fontSize: 12 }} disabled={!pins.some((p) => p.mask) || busy} onClick={() => void exportMerged()}>合并导出</button>
@@ -381,7 +416,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
 export default definePlugin({
     id: "cutout-studio",
     name: "抠图工作台",
-    version: "0.6.3",
+    version: "0.6.4",
     description: "海报分层：一键/点选拆出透明图层做动画；遮罩+提示词接画布局部重绘，模型自选。",
     nodes: [
         {

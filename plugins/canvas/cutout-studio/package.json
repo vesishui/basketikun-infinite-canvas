@@ -1,6 +1,6 @@
 {
     "name": "cutout-studio",
-    "version": "0.6.3",
+    "version": "0.6.4",
     "private": true,
     "type": "module",
     "description": "抠图工作台：SAM 点选/一键海报分层，透明 PNG 图层做动画 + 遮罩标注接画布局部重绘（模型自选）",
