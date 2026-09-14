@@ -12,8 +12,9 @@ web/dist
 
 **/dist
 web/public/plugins
-# 本地托管的模型权重（脚本从移动硬盘缓存复制进来，不入库）
+# 本地托管的模型权重与前端运行时（脚本复制进来，不入库）
 web/public/models
+web/public/vendor
 plugins/canvas/*/dist
 plugins/canvas/*/node_modules
 web/public/plugins

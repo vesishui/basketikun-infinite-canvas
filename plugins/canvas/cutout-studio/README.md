@@ -13,6 +13,8 @@
 
 权重**本地托管**在 `web/public/models/Xenova/slimsam-77-uniform`（`onnx/*_quantized.onnx` + 三个 json），插件只从本站 `/models/` 读，不请求外网。浏览器直连 hf-mirror.com 会直接 `Failed to fetch`，所以不要改回远程加载。
 
+前端运行时同样本地化：`transformers.min.js`（888KB）+ `ort-wasm-simd-threaded.jsep.wasm`（21MB）放在 `web/public/vendor/`，由 `bash scripts/fetch-runtime.sh` 从 npm 复制进来。此前插件直连 `cdn.jsdelivr.net` 拉 ESM，代理一关就整个插件不可用。两个文件**必须在同一目录**——该产物用 `import.meta.url` 推导 webpack publicPath，wasm 放子目录会 404；也不能软链，理由同权重。
+
 **这里必须是真实文件，不能做软链**：Vite 扫描 public 目录时只要发现符号链接就整体放弃（`ERR_SYMLINK_IN_RECURSIVE_READDIR`），`/models/*` 会被 SPA fallback 成 `index.html`，模型只会报一句难懂的解析错误。工作台启动时会先探测 `content-type`，命中 HTML 就直接提示「本地权重未托管」，不再让你猜。
 
 权重目录已在 `.gitignore` 忽略；移动硬盘未挂载或换机器时跑 `bash scripts/fetch-sam-model.sh`：脚本会先把权重下到 `/Volumes/Acer2/Model/slimsam-models` 做缓存（可用 `MODEL_ROOT` 改），再复制进 `web/public/models`。
@@ -38,6 +40,6 @@
 
 ## 已知限制
 
-- mask 由官方 `post_process_masks` 还原到原图尺寸，边缘仍偏糙，精细发丝不如专用抠图模型。
+- mask 由官方 `post_process_masks` 还原到原图尺寸，边缘是硬边；实测过 trimap matting 精修但结论是否定的（见 CHANGELOG 讨论），暂用确定性羽化改善观感。
 - 文字层按像素分割，不是可编辑文字层（豆包/Lovart 那类会走 OCR），需要改文字内容时建议发画布重绘或另接 OCR。
 - 只取第一个上游图片节点作为源图。

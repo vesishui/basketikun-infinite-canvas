@@ -3,6 +3,7 @@
 ## Unreleased
 
 + [新增] 画布插件「抠图工作台」支持海报分层：一键自动分层与点选加层，可分层/合并导出透明 PNG 图层用于做动画，并可把图层 mask 生成遮罩标注图连同修改要求发送到画布，复用内置局部重绘链路由用户自选模型生成。
++ [修复] 抠图工作台不再直连 cdn.jsdelivr 拉取 transformers.js 运行时，改由 `scripts/fetch-runtime.sh` 把产物本地托管到 `web/public/vendor`，断网或未开代理时插件仍可用。
 + [修复] 抠图工作台 SAM 分割不可用：改为本地托管量化权重（不再请求浏览器直连会失败的 hf-mirror，权重必须是真实文件、不能软链，否则 Vite 会跳过 public 扫描并把 `/models/*` 回落成 index.html），修正模型调用参数、改用官方后处理还原 mask，并固定用 WASM 推理（WebGPU 下同一权重分割结果错位且更慢）；加载失败时如实显示错误原因，不再把失败误报成「没识别出可分层对象」。
 + [修复] 局部遮罩编辑弹窗底部两个按钮显示 i18n key 原文（canvas.editors.maskExport / maskGenerate）的问题，补齐中英语言包，按钮正常显示「导出标注图」「生成修改图」。
 + [调整] Canvas Agent 初始化指令升级为「工具路由+执行纪律」合并版：工作区 AGENTS.md 新增定向读（canvas_select_nodes→canvas_get_selection）、批量 apply_ops、写完回读校验、提示词只写可见 metadata.prompt、禁止全画布快照回灌等规则，画布渠道直连对话每条请求自动注入同一份规约为 system 消息，修复内置 agent 每步重复读取全画布 JSON 导致简单任务耗时数分钟的问题。

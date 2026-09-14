@@ -3,8 +3,12 @@
 import { definePlugin, useCallback, useEffect, useRef, useState } from "@infinite-canvas/plugin-sdk";
 import type { CanvasAgentOp, CanvasNodeContentProps, CanvasNodePanelProps, CanvasNodeContext } from "@infinite-canvas/plugin-sdk";
 
-const TF_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/+esm";
-// 权重本地托管在 web/public/models（软链到 /Volumes/Acer2/Model/slimsam-models），不走外网
+// 运行时和权重一律本地托管：插件此前直连 cdn.jsdelivr 拉 transformers.js，断网/代理没开就整个插件不可用，与「本地优先」矛盾。
+// 产物由 scripts/fetch-runtime.sh 放进 web/public/vendor，权重放进 web/public/models。
+const TF_URL = "/vendor/transformers.min.js";
+// wasm 必须和 transformers.min.js 同目录：该产物用 import.meta.url 推导 publicPath，跨目录会 404
+const WASM_PATH = "/vendor/";
+
 const MODEL_DIR = "Xenova/slimsam-77-uniform";
 const MODEL_PATH = `/models/${MODEL_DIR}/`;
 // 与宿主 canvas-node-mask-edit-dialog 的 maskOverlayColor(#2563eb) / maskOverlayAlpha(0.4) 保持一致
@@ -12,6 +16,11 @@ const MASK_RGB: [number, number, number] = [37, 99, 235];
 const MASK_ALPHA = 0.4;
 // 与宿主 i18n canvas.projectPage.maskPrompt 模板一致：图片1=原图，图片2=标注图（前缀由宿主按入边顺序自动编号）
 const MASK_PROMPT = "参考图片1为原图，图片2是在原图上用蓝色半透明标注出的待修改区域。请只修改蓝色标注覆盖的区域，其余区域与原图保持完全一致，输出与原图相同尺寸的完整图片，并且结果中不要保留任何蓝色标注。修改要求：";
+
+async function ensureStatic(url: string, script: string) {
+    const res = await fetch(url);
+    if ((res.headers.get("content-type") || "").includes("html")) throw new Error(`本地资源未托管：${url} 被回落成 HTML，请跑 ${script} 复制到 web/public`);
+}
 
 let tfPromise: Promise<any> | null = null;
 function loadTf(): Promise<any> {
@@ -156,11 +165,12 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
     const ensureSam = useCallback(async (): Promise<Sam> => {
         if (samRef.current && samRef.current.key === source) return samRef.current;
         try {
-            // 先确认权重真的被静态托管：Vite 的 public 目录扫描遇到符号链接会整体放弃，
-            // 此时 /models/* 会静默回落到 index.html，模型只会报一句难懂的解析失败。
-            const probe = await fetch(`${MODEL_PATH}config.json`);
-            if ((probe.headers.get("content-type") || "").includes("html")) throw new Error(`本地权重未托管：${MODEL_PATH}config.json 被回落成 HTML，请跑 scripts/fetch-sam-model.sh 把权重复制到 web/public/models`);
+            // 先确认本地静态资源真的被托管：Vite 的 public 扫描遇到符号链接会整体放弃，
+            // 此时 /models 与 /vendor 会静默回落到 index.html，只会报一句难懂的解析失败。
+            await ensureStatic(`${MODEL_PATH}config.json`, "scripts/fetch-sam-model.sh");
+            await ensureStatic(`${WASM_PATH}ort-wasm-simd-threaded.jsep.wasm`, "scripts/fetch-runtime.sh");
             const tf = await loadTf();
+            tf.env.backends.onnx.wasm.wasmPaths = WASM_PATH;
             // 权重随项目放在 public/models 下本地托管：浏览器直连 hf-mirror 会 Failed to fetch，不走外网最稳
             tf.env.allowLocalModels = true;
             tf.env.localModelPath = "/models/";
@@ -371,7 +381,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
 export default definePlugin({
     id: "cutout-studio",
     name: "抠图工作台",
-    version: "0.6.2",
+    version: "0.6.3",
     description: "海报分层：一键/点选拆出透明图层做动画；遮罩+提示词接画布局部重绘，模型自选。",
     nodes: [
         {
