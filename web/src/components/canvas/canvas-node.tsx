@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ChevronRight, Copy, Download, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -445,8 +446,8 @@ export const CanvasNode = React.memo(function CanvasNode({
 
             {showPanel && !isGroup && renderPanel ? (
                 definition?.fullscreenPanel ? (
-                    // 全屏 Panel:渲染在视口级 fixed 容器(无画布缩放变换影响),供插件承载全屏 Modal/弹窗
-                    <div className="fixed inset-0 z-[200]">{renderPanel(data)}</div>
+                    // 全屏 Panel:portal 到 body 才是真视口级——节点祖先带 transform(缩放/平移),内联 fixed 会被祖先劫持成节点盒大小
+                    createPortal(<div className="fixed inset-0 z-[200]">{renderPanel(data)}</div>, document.body)
                 ) : (
                     <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div>
                 )
