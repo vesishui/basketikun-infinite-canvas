@@ -24,7 +24,10 @@ for file in transformers.min.js ort-wasm-simd-threaded.jsep.wasm ort-wasm-simd-t
 done
 
 # 自检：被 Vite 回落成 HTML 的话，插件只会报一句难懂的解析失败
-for file in transformers.min.js ort-wasm-simd-threaded.jsep.wasm; do
-  type="$(curl -sS -m 10 -o /dev/null -w '%{content_type}' "http://127.0.0.1:3000/vendor/$file" || true)"
-  echo "本地托管检查: /vendor/$file -> ${type:-未响应}"
-done
+if curl -fsS -m 5 -o /dev/null http://127.0.0.1:3000/ 2>/dev/null; then
+  for file in transformers.min.js ort-wasm-simd-threaded.jsep.wasm; do
+    echo "本地托管检查: /vendor/$file -> $(curl -sS -m 10 -o /dev/null -w '%{content_type}' "http://127.0.0.1:3000/vendor/$file")"
+  done
+else
+  echo "dev server 未启动，跳过托管检查（启动后插件加载失败会提示「本地资源未托管」）"
+fi
