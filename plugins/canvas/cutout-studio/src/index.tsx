@@ -5,12 +5,14 @@ import type { CanvasAgentOp, CanvasNodeContentProps, CanvasNodePanelProps, Canva
 
 // 运行时和权重一律本地托管：插件此前直连 cdn.jsdelivr 拉 transformers.js，断网/代理没开就整个插件不可用，与「本地优先」矛盾。
 // 产物由 scripts/fetch-runtime.sh 放进 web/public/vendor，权重放进 web/public/models。
-const TF_URL = "/vendor/transformers.min.js";
+// 宿主把插件包成 blob: 模块执行，blob URL 没有目录基址，裸相对路径 import 会直接
+// 报 Failed to resolve module specifier，所以运行时必须写成带 origin 的完整 URL。
+const TF_URL = new URL("/vendor/transformers.min.js", location.href).href;
 // wasm 必须和 transformers.min.js 同目录：该产物用 import.meta.url 推导 publicPath，跨目录会 404
-const WASM_PATH = "/vendor/";
+const WASM_PATH = new URL("/vendor/", location.href).href;
 
 const MODEL_DIR = "Xenova/slimsam-77-uniform";
-const MODEL_PATH = `/models/${MODEL_DIR}/`;
+const MODEL_PATH = new URL(`/models/${MODEL_DIR}/`, location.href).href;
 // 与宿主 canvas-node-mask-edit-dialog 的 maskOverlayColor(#2563eb) / maskOverlayAlpha(0.4) 保持一致
 const MASK_RGB: [number, number, number] = [37, 99, 235];
 const MASK_ALPHA = 0.4;
@@ -205,7 +207,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
             tf.env.backends.onnx.wasm.wasmPaths = WASM_PATH;
             // 权重随项目放在 public/models 下本地托管：浏览器直连 hf-mirror 会 Failed to fetch，不走外网最稳
             tf.env.allowLocalModels = true;
-            tf.env.localModelPath = "/models/";
+            tf.env.localModelPath = new URL("/models/", location.href).href;
             tf.env.allowRemoteModels = false;
             setModelStatus("加载 SAM 模型中…");
             const processor = await tf.SamProcessor.from_pretrained(MODEL_DIR);
@@ -431,7 +433,7 @@ function WorkbenchPanel({ ctx, onClose }: CanvasNodePanelProps) {
 export default definePlugin({
     id: "cutout-studio",
     name: "抠图工作台",
-    version: "0.6.5",
+    version: "0.6.6",
     description: "海报分层：一键/点选拆出透明图层做动画；遮罩+提示词接画布局部重绘，模型自选。",
     nodes: [
         {

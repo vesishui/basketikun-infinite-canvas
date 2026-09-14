@@ -150,6 +150,7 @@ ctx.applyOps([
 ## 重依赖 / 资源
 
 - **重依赖**(three.js、marked 等):不要打进 bundle,运行时 `await import("https://esm.sh/...")` 动态加载(esbuild 自动 external);在 `src/env.d.ts` 声明该模块以通过 tsc。参考 `panorama/`、`markdown/`。
+- **本站资源路径必须写成带 origin 的完整 URL**:加载器用 `new Blob([source])` + `import(blobUrl)` 执行插件,blob URL 没有目录基址,`import("/vendor/x.js")` 这类裸相对路径会直接抛 `Failed to resolve module specifier`。写 `new URL("/vendor/x.js", location.href).href`。
 - **CSS**:写独立 `.css`,`import css from "./styles.css"` 拿到字符串(esbuild `text` loader),放到 `css` 字段自动注入/清理;`src/env.d.ts` 声明 `*.css`。参考 `markdown/`。
 - **HTML**:HTML 节点把 HTML 字符串塞进 sandbox iframe 的 `srcDoc`,自带 `<style>`,不需要插件级 CSS。参考 `html/`。
 
