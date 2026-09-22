@@ -15,6 +15,8 @@ web/public/plugins
 # 本地托管的模型权重与前端运行时（脚本复制进来，不入库）
 web/public/models
 web/public/vendor
+# 3D 导演台静态产物（第三方应用构建产物，用 plugins/canvas/3d-director/scripts/fetch-director-desk.sh 生成）
+web/public/director-desk
 plugins/canvas/*/dist
 plugins/canvas/*/node_modules
 web/public/plugins

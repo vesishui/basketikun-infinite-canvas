@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [新增] 画布插件「3D 导演台」：把第三方 3D 分镜导演台嵌为全屏插件节点，支持摆人物与机位、打关键帧运镜；上游图片节点自动作为全景背景（在导演台移除背景会同步删连线），导演台截图回传成本节点右侧的图片节点，后续模型仍由用户在画布自选。静态产物由 `plugins/canvas/3d-director/scripts/fetch-director-desk.sh` 本地生成到 `web/public/director-desk/`，不入库。
 + [修复] 抠图工作台打开即报「Failed to resolve module specifier /vendor/transformers.min.js」：宿主把插件包成 blob: 模块执行，裸相对路径无法解析，运行时与权重路径改为带 origin 的完整 URL。
 + [修复] 声明为全屏面板的画布插件（如抠图工作台）双击打开后弹窗被限制在节点盒子内、内容裁切不可交互：全屏面板改为 portal 到 body，不再被节点祖先的缩放/平移 transform 劫持。
 + [新增] 抠图工作台「分层导出」除透明图层外，同时落一对「遮罩标注图 → 补背景节点」，把前景被抠走后原图上的空洞交给画布内置局部重绘补全，模型仍由用户自选。
